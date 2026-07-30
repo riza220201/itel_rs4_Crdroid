@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  itel RS4 (S666LN, MT6789 / Helio G99) local manifest for crDroid 13.0
+  (Android 13, LineageOS-20 base).
+
+  Device stack is taken verbatim from the AUTHORITATIVE source: the
+  KimelaZX/device_itel_S666LN `lineage-20.0` branch `vendorsetup.sh`
+  (git-clone lines translated into repo <project> entries).
+
+  Context that makes this simpler than the A16/AOSPA port:
+  - crDroid 13.0's default revision IS refs/heads/lineage-20.0, so every
+    LineageOS-tracked project already syncs at LineageOS-20 HEAD (currently
+    SPL 2026-02-01). Only crDroid's own forks (frameworks/base, build/make,
+    Settings, frameworks/av, system/core, GameSpace) are frozen at 2024-09.
+  - crDroid ships NONE of the MediaTek/Transsion repos (only QCOM), so all six
+    below are added here with NO path collision (verified against default.xml +
+    snippets/*.xml).
+  - The A13 stack uses LineageOS-OFFICIAL hardware/mediatek + sepolicy_vndr
+    (lineage-20), not the MillenniumOSS "sixteen" repos the A16 port grafted.
+  - There is NO separate common-kernel repo on A13: device/itel/S666LN-kernel
+    (branch `thirteen`) is the self-contained PREBUILT kernel package
+    (Image.gz + dtb + dtbo + first-stage ramdisk + 198 vendor_dlkm .ko). The
+    Riza kernel Image.gz is swapped into it (see apply step / task 8).
+
+  Branches verified present 2026-07-27 via git ls-remote.
+
+  2026-07-29 — 🔴 THE DEVICE TREE IS NOT PUBLICLY HOSTED. Both
+  KimelaZX/device_itel_S666LN and the republished riza220201/device_itel_S666LN return 404;
+  the original author asked for the republish to be taken down and it was. There is currently
+  NO public URL for this project, so a plain `repo sync` WILL FAIL on it.
+
+  Restore it from the backup shipped alongside this recipe instead:
+    device-tree-backup/device_itel_S666LN-COMPLETE-20260729.tgz   (28 MB, gitignored)
+  It contains the working tree, the full git history and every branch that existed
+  (kimela/lineage-20.0, rizapub/lineage-20.0, lineage-21.0, lineage-23.2). Extract it over
+  device/itel/S666LN, re-link .git/objects into .repo/project-objects, then run apply-overlays.sh.
+
+  Credit is unchanged and unaffected by the hosting situation: the device, vendor and kernel trees
+  are KimelaZX's work. The kernel and vendor repos are still up and are still fetched below.
+  Everything apply-overlays.sh does on top (steps 4-26) is this project's own.
+-->
+<manifest>
+  <remote name="riza"      fetch="https://github.com/riza220201"    clone-depth="1" />
+  <remote name="kimela"    fetch="https://github.com/KimelaZX"      clone-depth="1" />
+  <remote name="swaraloka" fetch="https://github.com/swaraloka-lab" clone-depth="1" />
+  <remote name="los"       fetch="https://github.com/LineageOS"     clone-depth="1" />
+
+  <!-- itel S666LN device tree (A13) — the honest stock A13 fingerprint lives here.
+       NOT SYNCABLE: no public host. Restore from device-tree-backup/ (see note above).
+       Left here, commented out, so the intended path/revision is on record.
+  <project path="device/itel/S666LN" name="device_itel_S666LN" remote="riza" revision="lineage-20.0" /> -->
+
+  <!-- Prebuilt kernel package: Image.gz + dtb + dtbo.img + ramdisk + vendor_dlkm/*.ko
+       (KMI 0x7c24b32d). Riza kernel Image.gz is dropped in here. -->
+  <project path="device/itel/S666LN-kernel" name="device_itel_S666LN-kernel" remote="kimela" revision="thirteen" />
+
+  <!-- Vendor blobs (~2 GB) -->
+  <project path="vendor/itel/S666LN" name="vendor_itel_S666LN" remote="kimela" revision="lineage-20.0" />
+
+  <!-- Transsion hardware HALs (fingerprint / tranlog / etc.) mounted at hardware/transsion -->
+  <project path="hardware/transsion" name="hardware_millennium" remote="swaraloka" revision="lineage-20.0" />
+
+  <!-- LineageOS MediaTek hardware support (crDroid ships only QCOM; add MTK) -->
+  <project path="hardware/mediatek" name="android_hardware_mediatek" remote="los" revision="lineage-20" />
+
+  <!-- LineageOS MediaTek vendor sepolicy -->
+  <project path="device/mediatek/sepolicy_vndr" name="android_device_mediatek_sepolicy_vndr" remote="los" revision="lineage-20" />
+
+  <!-- ============================================================================
+       crDroid dead-branch manifest-drift fixes (crDroid 13.0 froze Sep-2024 but
+       tracks shared rolling branches that moved on). Mirror LIVE LineageOS lineage-20.0.
+       ============================================================================ -->
+
+  <!-- external/chromium-webview: crDroid's frozen snippet links the build glue as
+       src="Android.mk", but the rolling `main` branch renamed it to os_pickup.mk
+       (this matches the current LineageOS lineage-20.0 manifest). The stale linkfile
+       makes a broken symlink -> kati fails "external/chromium-webview/Android.mk: No
+       such file or directory". Re-add with the correct linkfile. -->
+  <remove-project name="LineageOS/android_external_chromium-webview_patches" />
+  <project path="external/chromium-webview/patches" name="LineageOS/android_external_chromium-webview_patches" groups="pdk" remote="github" revision="main">
+    <linkfile src="os_pickup.mk" dest="external/chromium-webview/Android.mk" />
+    <linkfile src="CleanSpec.mk" dest="external/chromium-webview/CleanSpec.mk" />
+    <linkfile src="README" dest="external/chromium-webview/README" />
+  </project>
+</manifest>

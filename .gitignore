@@ -1,0 +1,90 @@
+# ============================================================================
+#  crDroid 13.0 / itel RS4 (S666LN) build recipe — public-repo exclusions.
+#  Everything proprietary, huge, secret, or personal stays LOCAL. The public
+#  repo is the RECIPE: local_manifests/, apply-overlays.sh, README, docs.
+# ============================================================================
+
+# --- Proprietary stock firmware (5.8 GB, Transsion/itel) — not redistributable ---
+itel-RS4-S666LN-28.zip
+*.stockfw.zip
+COS*.zip
+
+# --- Proprietary MediaTek blobs harvested from stock firmware — not redistributable ---
+# 32-bit Mali GPU stack (fallback; apply-overlays documents how to regenerate).
+blobs32/
+# Patched camera-HAL libs enabling RAW/DNG (from the Itel_RS4_RAW_v2 module).
+blobs-camera-raw/
+Itel_RS4_RAW_v2.zip
+# Stock identity extraction workspace / harvested build.props.
+stock-28-extract/
+stock-props/
+
+# --- Riza kernel prebuilt — published separately in github.com/riza220201/itel-rs4-kernel ---
+# The recipe references it; the raw Image.gz is not vendored here.
+kernel-stage/
+
+# --- Private signing keys — NEVER commit (sign platform-privileged code) ---
+keys-priv/
+*.pk8
+*.x509.pem
+
+# --- Proprietary fenrir-signed LK — obtain from the device community ---
+s666ln-fenrir-signed.bin
+
+# --- Personal lab journal — kept local, not part of the public recipe ---
+JOURNAL.md
+TELEGRAM-POST*.md
+# RESUME*.md, not just RESUME-THIS.md (the AOSPA filename): this project's copy is
+# RESUME.md and slipped past the old pattern. It carries the device serial, the
+# build-VM ssh alias and key filename — local-only, like the journal.
+RESUME*.md
+
+# --- Built ROM zips (multi-GB) — released via Telegram/Drive, never vendored ---
+out-zips/
+*.zip
+
+# --- Device-tree backup tarball — KimelaZX/device_itel_S666LN was deleted (404),
+#     so this 66 MB tgz is currently the only copy besides the build VM. It gets
+#     republished as its own repo with attribution, not committed into the recipe.
+device-tree-backup/
+
+# --- Abandoned raw-super flashable — kept locally, NOT published ---
+# Complete and working, but dropped by operator decision: writing super directly
+# bypasses update_engine, so nothing cleans up Virtual A/B snapshot state and a
+# raw dd is one-shot with no rollback. Shipping it inside the public recipe would
+# read as an install path, which it is not. The install path is the signed OTA zip.
+flashable/
+build-flashable.sh
+build-super.sh
+
+# --- Screenshots / scratch notes ---
+*.png
+*.jpg
+opus 5 method of making infinix both strong and pass e-kyc.txt
+
+# --- Build outputs / logs / cruft ---
+out/
+*.log
+*.swp
+*~
+.DS_Store
+
+# Local post-flash verification helper. Kept OUT of the public recipe on purpose:
+# it is a working tool tied to whatever build is being tested, not an install
+# step, and RESUME.md points at it. (The predecessor lived in a session
+# scratchpad and was lost when the session ended -- hence a stable path here.)
+release-gate.sh
+
+# Raw memory / partition dumps pulled off the device during debugging. These are
+# verbatim RAM contents and can carry anything that was resident at the time —
+# never publish them. (charger-ramoops was a 917K ramoops dump taken while
+# chasing the offline-charging bug.)
+charger-ramoops
+*-ramoops
+*.ramoops
+ramoops*.bin
+
+# Working notes kept local. This repo is the build RECIPE; the narrative of how
+# each bug was found belongs with the device-tree project, not here.
+BYPASS-CHARGING-PROOF.md
+ONDEVICE-TEST-CHECKLIST.md
