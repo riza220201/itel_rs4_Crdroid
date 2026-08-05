@@ -1,85 +1,179 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  itel RS4 (S666LN, MT6789 / Helio G99) local manifest for crDroid 13.0
-  (Android 13, LineageOS-20 base).
+  ============================================================================
+  MIRRORED FILE. The canonical copy is device/itel/S666LN/S666LN.xml in
+  riza220201/device_itel_S666LN. Refresh with:
 
-  Device stack is taken verbatim from the AUTHORITATIVE source: the
-  KimelaZX/device_itel_S666LN `lineage-20.0` branch `vendorsetup.sh`
-  (git-clone lines translated into repo <project> entries).
+      cp device/itel/S666LN/S666LN.xml local_manifests/S666LN.xml
 
-  Context that makes this simpler than the A16/AOSPA port:
-  - crDroid 13.0's default revision IS refs/heads/lineage-20.0, so every
-    LineageOS-tracked project already syncs at LineageOS-20 HEAD (currently
-    SPL 2026-02-01). Only crDroid's own forks (frameworks/base, build/make,
-    Settings, frameworks/av, system/core, GameSpace) are frozen at 2024-09.
-  - crDroid ships NONE of the MediaTek/Transsion repos (only QCOM), so all six
-    below are added here with NO path collision (verified against default.xml +
-    snippets/*.xml).
-  - The A13 stack uses LineageOS-OFFICIAL hardware/mediatek + sepolicy_vndr
-    (lineage-20), not the MillenniumOSS "sixteen" repos the A16 port grafted.
-  - There is NO separate common-kernel repo on A13: device/itel/S666LN-kernel
-    (branch `thirteen`) is the self-contained PREBUILT kernel package
-    (Image.gz + dtb + dtbo + first-stage ramdisk + 198 vendor_dlkm .ko). The
-    Riza kernel Image.gz is swapped into it (see apply step / task 8).
+  and do not edit this copy directly. Two manifests describing one build is a
+  drift hazard; keeping this one byte-identical is what makes it safe.
+  ============================================================================
 
-  Branches verified present 2026-07-27 via git ls-remote.
+  Superseded history, kept because the reasoning still matters:
 
-  2026-07-29 — 🔴 THE DEVICE TREE IS NOT PUBLICLY HOSTED. Both
-  KimelaZX/device_itel_S666LN and the republished riza220201/device_itel_S666LN return 404;
-  the original author asked for the republish to be taken down and it was. There is currently
-  NO public URL for this project, so a plain `repo sync` WILL FAIL on it.
+  Until 2026-08-05 this file pulled the device stack from KimelaZX and carried a
+  note saying the device tree had no public host at all. Both
+  KimelaZX/device_itel_S666LN and a republished copy returned 404, so `repo sync`
+  could not fetch it and the tree had to be restored from a local tarball.
 
-  Restore it from the backup shipped alongside this recipe instead:
-    device-tree-backup/device_itel_S666LN-COMPLETE-20260729.tgz   (28 MB, gitignored)
-  It contains the working tree, the full git history and every branch that existed
-  (kimela/lineage-20.0, rizapub/lineage-20.0, lineage-21.0, lineage-23.2). Extract it over
-  device/itel/S666LN, re-link .git/objects into .repo/project-objects, then run apply-overlays.sh.
+  That is over. The device, kernel-package and vendor trees are now
+  independently authored and published under riza220201, and this recipe builds
+  against them. The device-tree-backup/ tarball is no longer part of the build
+  path.
+-->
+<!--
+  itel RS4 (S666LN, MT6789 / Helio G99) — local manifest for an Android 13 /
+  LineageOS-20 base (crDroid 13.0 tested).
 
-  Credit is unchanged and unaffected by the hosting situation: the device, vendor and kernel trees
-  are KimelaZX's work. The kernel and vendor repos are still up and are still fetched below.
-  Everything apply-overlays.sh does on top (steps 4-26) is this project's own.
+  Every project below is either the operator's own independently-authored work or
+  a LineageOS-official repository. Nothing is pulled from a third-party device
+  stack; that is the point of this tree.
+
+  Each entry is justified by something the device tree actually references:
+
+    device/itel/S666LN            the tree itself
+    device/itel/S666LN-kernel     TARGET_KERNEL_PACKAGE in BoardConfig.mk
+    kernel/itel/S666LN            TARGET_KERNEL_SOURCE in BoardConfig.mk
+    vendor/itel/S666LN            inherited by device.mk, and BoardConfigVendor.mk
+    hardware/mediatek             PRODUCT_SOONG_NAMESPACES in device.mk
+    device/mediatek/sepolicy_vndr sepolicy/vendor/*.te reference types it declares
+                                  (e.g. vendor_mtk_powerhal_prop)
+
+  Deliberately NOT included: hardware/transsion. All nine Transsion HAL interface
+  libraries ship as prebuilt blobs in vendor/itel/S666LN and have no unmet
+  vendor.* dependencies, so no source repo is required.
 -->
 <manifest>
-  <remote name="riza"      fetch="https://github.com/riza220201"    clone-depth="1" />
-  <remote name="kimela"    fetch="https://github.com/KimelaZX"      clone-depth="1" />
-  <remote name="swaraloka" fetch="https://github.com/swaraloka-lab" clone-depth="1" />
-  <remote name="los"       fetch="https://github.com/LineageOS"     clone-depth="1" />
 
-  <!-- itel S666LN device tree (A13) — the honest stock A13 fingerprint lives here.
-       NOT SYNCABLE: no public host. Restore from device-tree-backup/ (see note above).
-       Left here, commented out, so the intended path/revision is on record.
-  <project path="device/itel/S666LN" name="device_itel_S666LN" remote="riza" revision="lineage-20.0" /> -->
+  <remote name="riza" fetch="https://github.com/riza220201" clone-depth="1" />
+  <remote name="los"  fetch="https://github.com/LineageOS"  clone-depth="1" />
+  <remote name="crdroidgh" fetch="https://github.com/crdroidandroid" clone-depth="1" />
 
-  <!-- Prebuilt kernel package: Image.gz + dtb + dtbo.img + ramdisk + vendor_dlkm/*.ko
-       (KMI 0x7c24b32d). Riza kernel Image.gz is dropped in here. -->
-  <project path="device/itel/S666LN-kernel" name="device_itel_S666LN-kernel" remote="kimela" revision="thirteen" />
+  <!-- ===================================================================
+       Device stack
+       =================================================================== -->
 
-  <!-- Vendor blobs (~2 GB) -->
-  <project path="vendor/itel/S666LN" name="vendor_itel_S666LN" remote="kimela" revision="lineage-20.0" />
+  <!-- The device tree. -->
+  <project path="device/itel/S666LN" name="device_itel_S666LN"
+           remote="riza" revision="lineage-20.0" />
 
-  <!-- Transsion hardware HALs (fingerprint / tranlog / etc.) mounted at hardware/transsion -->
-  <project path="hardware/transsion" name="hardware_millennium" remote="swaraloka" revision="lineage-20.0" />
+  <!-- Kernel package: dtb/, dtbo.img and the two prebuilt module sets
+       (198 vendor_dlkm + 206 vendor_boot). NOT the kernel image — that is built
+       from source, see below. Those modules are MediaTek prebuilts with no
+       source, and they are what the KMI gate checks the built kernel against. -->
+  <project path="device/itel/S666LN-kernel" name="device_itel_S666LN-kernel"
+           remote="riza" revision="lineage-20.0" />
 
-  <!-- LineageOS MediaTek hardware support (crDroid ships only QCOM; add MTK) -->
-  <project path="hardware/mediatek" name="android_hardware_mediatek" remote="los" revision="lineage-20" />
+  <!-- Kernel source: Google GKI android12-5.10-lts, forked only to carry
+       arch/arm64/configs/s666ln_defconfig. That defconfig is the single source
+       of truth for the config and is generated by the kernel project's build.sh
+       (stock config + performance + network + bore + ntsync).
 
-  <!-- LineageOS MediaTek vendor sepolicy -->
-  <project path="device/mediatek/sepolicy_vndr" name="android_device_mediatek_sepolicy_vndr" remote="los" revision="lineage-20" />
+       It is load-bearing: the config, not the source, is what reproduces
+       module_layout = 0x7c24b32d. A kernel built from gki_defconfig compiles
+       fine and boots nothing. Do not set KERNEL_LTO. -->
+  <project path="kernel/itel/S666LN" name="kernel_itel_S666LN"
+           remote="riza" revision="lineage-20.0" clone-depth="1" />
 
-  <!-- ============================================================================
-       crDroid dead-branch manifest-drift fixes (crDroid 13.0 froze Sep-2024 but
-       tracks shared rolling branches that moved on). Mirror LIVE LineageOS lineage-20.0.
-       ============================================================================ -->
+  <!-- Proprietary blobs, extracted from itel stock firmware revision 28
+       (build 251212V1661) by the device tree's own extract-files.sh. ~1.3 GB. -->
+  <project path="vendor/itel/S666LN" name="vendor_itel_S666LN"
+           remote="riza" revision="lineage-20.0" />
 
-  <!-- external/chromium-webview: crDroid's frozen snippet links the build glue as
-       src="Android.mk", but the rolling `main` branch renamed it to os_pickup.mk
-       (this matches the current LineageOS lineage-20.0 manifest). The stale linkfile
-       makes a broken symlink -> kati fails "external/chromium-webview/Android.mk: No
-       such file or directory". Re-add with the correct linkfile. -->
+  <!-- ===================================================================
+       LineageOS-official MediaTek support.
+       crDroid ships only the Qualcomm equivalents, so these are additive and
+       collide with nothing in default.xml or the crDroid snippets.
+       =================================================================== -->
+
+  <project path="hardware/mediatek" name="android_hardware_mediatek"
+           remote="los" revision="lineage-20" />
+
+  <project path="device/mediatek/sepolicy_vndr" name="android_device_mediatek_sepolicy_vndr"
+           remote="los" revision="lineage-20" />
+
+  <!-- MediaTek Wi-Fi HAL source, from crDroid's own org.
+       frameworks/opt/net/wifi builds libwifi-hal unconditionally and
+       whole-static-links $(LIB_WIFI_HAL), which BOARD_WLAN_DEVICE := MediaTek
+       resolves to libwifi-hal-mt66xx. Nothing else in the tree provides it, so
+       the build fails with "libwifi-hal ... missing libwifi-hal-mt66xx".
+       This repo supplies that plus the wpa_supplicant driver lib, and is itself
+       guarded by BOARD_WLAN_DEVICE == MediaTek. -->
+  <project path="hardware/mediatek/wlan" name="android_hardware_mediatek_wlan"
+           remote="crdroidgh" revision="13.0" />
+
+  <!-- ===================================================================
+       crDroid 13.0 branch fix — NOT device-specific.
+       Drop this block on any other ROM base.
+
+       crDroid 13.0's manifest snippet is frozen at Sep-2024 but references
+       rolling shared branches that have since moved. It links the webview build
+       glue as src="Android.mk", which the rolling `main` branch renamed to
+       os_pickup.mk. The stale linkfile produces a broken symlink and kati fails
+       with "external/chromium-webview/Android.mk: No such file or directory".
+       Re-add the project with the correct linkfile, matching current LineageOS.
+       =================================================================== -->
+
+  <!-- packages/services/Mms pinned to the last commit that matches crDroid's
+       frameworks/base.
+
+       LineageOS hardened the MMS path by threading a calling-user id through
+       IMms ("Propagating callingUserId from messaging app to the RADIO process",
+       fbb2828). That changed BOTH frameworks/base/mms/.../IMms.aidl and
+       packages/services/Mms together. crDroid ships its own frameworks/base and
+       never merged the AIDL half (LineageOS's IMms.aidl puts `in int callingUser`
+       on 4 methods, crDroid's on 0) while still inheriting
+       LineageOS's Mms from default.xml. The two therefore disagree:
+
+         MmsService.java:211: error: <anonymous MmsService$1> is not abstract and
+         does not override abstract method addMultimediaMessageDraft(String,Uri)
+
+       This is not device-specific and not caused by this tree; any fresh crDroid
+       13.0 sync hits it. 4c511b7d is the parent of fbb2828, the last Mms commit
+       whose signatures match crDroid's AIDL (verified: 2-arg
+       addMultimediaMessageDraft, zero callingUser references).
+
+       TRADE-OFF: this gives up the LineageOS calling-user verification on the MMS
+       path until crDroid merges the frameworks/base side. The alternative is
+       patching crDroid's frameworks/base, which means carrying a fork of a repo
+       this project does not own. Drop this block once crDroid picks up fbb2828.
+
+       No clone-depth: repo cannot resolve a bare SHA in a shallow fetch. -->
+  <!-- packages/services/Telephony pinned for the same reason as Mms below.
+
+       LineageOS commit c1b4425 ("Disallow shell to change
+       CarrierRestrictionRules") calls TelephonyPermissions.isShell(int), which
+       LineageOS added to their frameworks/base. crDroid ships its own
+       frameworks/base and does not have that method (verified against
+       crdroidandroid/android_frameworks_base 13.0 as well as the local
+       checkout, which is at upstream HEAD), so the build fails:
+
+         PhoneInterfaceManager.java:8267: error: cannot find symbol
+           symbol: method isShell(int)  location: class TelephonyPermissions
+
+       f1e9284 is the parent of c1b4425 and the last revision with no isShell
+       reference in either PhoneInterfaceManager.java or CarrierConfigLoader.java.
+
+       TRADE-OFF: gives up that one shell restriction until crDroid merges the
+       frameworks/base side. -->
+  <remove-project name="LineageOS/android_packages_services_Telephony" />
+  <project path="packages/services/Telephony" name="LineageOS/android_packages_services_Telephony"
+           groups="pdk-fs" remote="github"
+           revision="f1e9284296c768b6a537d8c07a186c044ee7a678" />
+
+  <remove-project name="LineageOS/android_packages_services_Mms" />
+  <project path="packages/services/Mms" name="LineageOS/android_packages_services_Mms"
+           groups="pdk-cw-fs,pdk-fs" remote="github"
+           revision="4c511b7d21424a8c23a3db9a08ccee07d88dd153" />
+
   <remove-project name="LineageOS/android_external_chromium-webview_patches" />
-  <project path="external/chromium-webview/patches" name="LineageOS/android_external_chromium-webview_patches" groups="pdk" remote="github" revision="main">
+  <project path="external/chromium-webview/patches"
+           name="LineageOS/android_external_chromium-webview_patches"
+           groups="pdk" remote="github" revision="main">
     <linkfile src="os_pickup.mk" dest="external/chromium-webview/Android.mk" />
     <linkfile src="CleanSpec.mk" dest="external/chromium-webview/CleanSpec.mk" />
     <linkfile src="README" dest="external/chromium-webview/README" />
   </project>
+
 </manifest>

@@ -6,9 +6,15 @@ baked into `boot.img`, on the device's **own honest identity** — no Pixel spoo
 
 This repo is the **recipe**, not the Android source tree — a local manifest plus idempotent scripts
 that graft the MT6789 device stack onto crDroid and fix every breakage from `lunch` through release
-signing. `repo sync` + `apply-overlays.sh` + `sign-release.sh` reproduces the released zip — **with
-one caveat: the device tree itself is no longer hosted publicly** and must be obtained separately
-(see [Credits](#credits) and the note in `local_manifests/S666LN.xml`). Everything else syncs.
+signing. `repo sync` + `apply-overlays.sh` + `sign-release.sh` reproduces the released zip, and as
+of the 2026-08-05 build **every input syncs from a public repo** — nothing has to be obtained out of
+band any more.
+
+The device stack is now independently authored and published:
+[device](https://github.com/riza220201/device_itel_S666LN) ·
+[kernel package](https://github.com/riza220201/device_itel_S666LN-kernel) ·
+[vendor](https://github.com/riza220201/vendor_itel_S666LN). Earlier releases were built on a device
+tree that had no public host, which is why they were labelled FINAL.
 
 ## What this build is
 
@@ -26,13 +32,19 @@ one caveat: the device tree itself is no longer hosted publicly** and must be ob
   servers check — so nothing has to be invented.
 - **Genuinely release-key signed**, not dev-keys wearing a `release-keys` label.
 - **USB debugging off by default**, GApps built in, SELinux enforcing.
+- **JamesDSP replaces AudioFX** (2026-08-05 onward). Pinned to an F-Droid build and sha256-verified,
+  installed privileged so it does not re-prompt for capture consent every reboot. It uses
+  `AudioPlaybackCapture` rather than the vendor AudioEffect chain AudioFX drove, so apps that set
+  `allowAudioPlaybackCapture="false"` cannot be processed -- that is Android by design, not a defect.
+- **Overclocking is not restricted.** Stock's powerhint ships unmodified, so `scaling_max_freq` is
+  never clamped back. Clock speed is the user's call.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `local_manifests/S666LN.xml` | device stack (device/vendor/kernel + LineageOS MTK hardware & sepolicy + swaraloka-lab transsion), plus crDroid dead-branch manifest-drift fixes |
-| `apply-overlays.sh` | **33 idempotent steps** — the single place every port fixup lives. Re-run after any `repo sync`. (Step 30 is a deliberate no-op that *reverts* an abandoned experiment; see its comment block.) |
+| `local_manifests/S666LN.xml` | mirror of the canonical `device/itel/S666LN/S666LN.xml`: device/vendor/kernel + LineageOS MTK hardware, sepolicy and Wi-Fi HAL, plus crDroid dead-branch manifest-drift fixes. `hardware/transsion` is deliberately absent -- all nine Transsion HAL libraries ship as prebuilt blobs |
+| `apply-overlays.sh` | **34 idempotent steps** — the single place every port fixup lives. Re-run after any `repo sync`. (Step 30 is a deliberate no-op that *reverts* an abandoned experiment; see its comment block.) |
 | `crdroid-build-rc.sh` | builds `target-files-package` (not `bacon` — see below) with the stock incremental pinned |
 | `sign-release.sh` | release-signs the target-files and builds the OTA. `VERIFY_ONLY=1` re-checks an existing one; `FROM_SIGNED=1` resumes after signing |
 | `crdroid-tf.sh` | bare target-files helper |
@@ -47,7 +59,9 @@ one caveat: the device tree itself is no longer hosted publicly** and must be ob
   from the device community (**@itelRS4Updates** on Telegram).
 - **Signing keys** (`keys-priv/`) — generate your own; they sign platform-privileged code.
 - **The Riza kernel prebuilt** (`kernel-stage/Image.gz`) — published separately at
-  [`riza220201/itel-rs4-kernel`](https://github.com/riza220201/itel-rs4-kernel).
+  [`riza220201/itel-rs4-kernel`](https://github.com/riza220201/itel-rs4-kernel). `apply-overlays.sh`
+  step 1 now delegates to the device tree's `import-kernel.sh`, which refuses any kernel whose
+  `module_layout` or symbol CRCs disagree with the 404 prebuilt vendor modules.
 - **Proprietary MediaTek blobs** (`blobs32/`, `blobs-camera-raw/`) and the stock firmware zip.
 
 ## Reproduce
@@ -57,11 +71,9 @@ one caveat: the device tree itself is no longer hosted publicly** and must be ob
 mkdir -p ~/crdroid && cd ~/crdroid
 repo init -u https://github.com/crdroidandroid/android -b 13.0 --depth=1 --no-repo-verify
 cp <this-repo>/local_manifests/S666LN.xml .repo/local_manifests/
-repo sync -c --no-tags --force-sync -j8
-
-# 1b. The device tree is NOT in the manifest (no public host — see Credits).
-#     Place it at device/itel/S666LN yourself before continuing. The kernel and
-#     vendor trees DO sync normally.
+# that file is a mirror of device/itel/S666LN/S666LN.xml, which is canonical;
+# refresh it from the device tree after any manifest change there
+repo sync -c --no-tags --force-sync -j8      # everything syncs, device tree included
 
 # 2. Apply every overlay/fixup (idempotent; re-run after any future sync)
 bash <this-repo>/apply-overlays.sh ~/crdroid
@@ -121,11 +133,10 @@ GApps are **built in** — do not flash a GApps package on top.
 
 ## Credits
 
-- **[KimelaZX](https://github.com/KimelaZX)** — the S666LN device, vendor and kernel trees this port
-  is built on. The [kernel](https://github.com/KimelaZX/device_itel_S666LN-kernel) and
-  [vendor](https://github.com/KimelaZX/vendor_itel_S666LN) trees are still published there.
-  **The device tree is not currently hosted publicly anywhere** — see the note in
-  `local_manifests/S666LN.xml`. Obtain it from the device community
-  (**@itelRS4Updates** on Telegram); this recipe supplies only the fixes applied on top of it.
+- **[KimelaZX](https://github.com/KimelaZX)** — the device, vendor and kernel trees that earlier
+  releases of this recipe were built on. Builds from 2026-08-05 onward no longer use them: the stack
+  is independently authored and published under
+  [riza220201](https://github.com/riza220201/device_itel_S666LN). The credit stands for everything
+  up to and including FINAL12.
 - **crDroid Android**, **LineageOS**, **swaraloka-lab** (Transsion hardware), **MindTheGapps**
 - **chaldeaprjkt** — GameSpace · **firelzrd** — BORE · **Masahito Suzuki** — reflex governor
