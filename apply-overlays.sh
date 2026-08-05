@@ -2102,6 +2102,40 @@ else
   echo "   already patched"
 fi
 
+# --------------------------------------------------------------------------
+# hardware/mediatek/bootctrl builds android.hardware.boot@1.2-mtkimpl for both
+# ABIs. The 32-bit variant cannot compile on this tree:
+# vendor/lineage/build/soong's generated_kernel_includes runs headers_install
+# once, for ARCH=$(KERNEL_ARCH) = arm64, then exports the result to every ABI
+# through one cc_library_headers. A 32-bit compile therefore reads arm64's
+# asm/sigcontext.h and dies on
+#     error: unknown type name '__uint128_t'   (__uint128_t vregs[32];)
+#
+# Only the 64-bit impl is ever loaded -- android.hardware.boot@1.2-service is a
+# 64-bit process and dlopen's it out of /vendor/lib64/hw -- so restricting the
+# module to the primary arch loses nothing.
+#
+# This is patched here rather than in the device tree because it is a defect in
+# a repo the device tree does not own, and it cannot be worked around from the
+# device side: a vendor/itel/S666LN prebuilt cannot displace it, because soong's
+# prefer: only pairs prebuilt with source inside one namespace and
+# hardware/mediatek is a separate imported namespace. See device.mk.
+#
+# DURABLE FIX: upstream compile_multilib to LineageOS, or carry a fork of
+# android_hardware_mediatek. Until then this step is mandatory -- without it the
+# build fails at ~16%.
+echo "== step 35: restrict android.hardware.boot@1.2-mtkimpl to 64-bit =="
+BCBP="$TREE/hardware/mediatek/bootctrl/Android.bp"
+if [ ! -f "$BCBP" ]; then
+  echo "   N/A: hardware/mediatek/bootctrl not synced"
+elif grep -q 'compile_multilib: "first"' "$BCBP"; then
+  echo "   already patched"
+else
+  sed -i 's|^    stem: "android.hardware.boot@1.0-impl-1.2-mtkimpl",|&\n    // 32-bit cannot build: generated_kernel_headers are arm64-only (apply-overlays step 35)\n    compile_multilib: "first",|' "$BCBP"
+  grep -q 'compile_multilib: "first"' "$BCBP" || { echo "   *** FATAL: patch did not apply"; exit 1; }
+  echo "   patched"
+fi
+
 echo "===================================================================="
 echo " apply-overlays complete"
 echo "===================================================================="
