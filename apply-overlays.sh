@@ -22,7 +22,32 @@ echo "===================================================================="
 # vendor_dlkm / dtb / dtbo are KMI-matched and unchanged (AnyKernel3 semantics).
 echo "== step 1: Riza custom kernel =="
 KPKG="$TREE/device/itel/S666LN-kernel"
-if [ -f "$HERE/kernel-stage/Image.gz" ]; then
+DT="$TREE/device/itel/S666LN"
+
+# The independently-authored device tree (riza220201/device_itel_S666LN) owns
+# kernel import itself and supersedes this step. It does not ship a prebuilt
+# Image.gz at the kernel-package root at all -- it builds GKI from source by
+# default and uses TARGET_PREBUILT_KERNEL + TARGET_FORCE_PREBUILT_KERNEL when a
+# kernel has been imported into S666LN-kernel/prebuilt/. Running the old branch
+# against it dies immediately:
+#     cp: cannot stat '.../S666LN-kernel/Image.gz': No such file or directory
+#
+# Delegating is also strictly safer. This step only ever counted 'reflex'
+# strings; import-kernel.sh runs the real KMI check -- module_layout plus every
+# symbol CRC against all 404 prebuilt vendor modules, both sets -- and REFUSES a
+# kernel that would flash cleanly and bootloop.
+if [ -x "$DT/import-kernel.sh" ]; then
+  echo "   device tree provides import-kernel.sh -- delegating to it"
+  ( cd "$DT" && KERNEL_PROJECT="${KERNEL_PROJECT:-$HOME/itel-rs4-kernel}" \
+      ./import-kernel.sh "${KERNEL_VARIANT:-vanilla}" ) || {
+    echo "   *** FATAL: kernel import/KMI check failed"; exit 1; }
+  echo "   staged: $(zcat "$KPKG/prebuilt/Image.gz" | strings | grep -aoE '5\.10\.[0-9]+-Riza-[a-z]+' | head -1)"
+  echo "   sha256: $(sha256sum "$KPKG/prebuilt/Image.gz" | cut -c1-16)"
+  REFLEX_HITS="$(zcat "$KPKG/prebuilt/Image.gz" | strings | grep -ci reflex || true)"
+  [ "$REFLEX_HITS" -ge 5 ] && echo "   reflex governor: PRESENT ($REFLEX_HITS refs)" || {
+    echo "   *** FATAL: staged kernel has no reflex governor ($REFLEX_HITS refs)."
+    echo "   *** init.mt6789.power.rc selects 'reflex' on policy0/policy6."; exit 1; }
+elif [ -f "$HERE/kernel-stage/Image.gz" ]; then
   [ -f "$KPKG/Image.gz.stock" ] || cp "$KPKG/Image.gz" "$KPKG/Image.gz.stock"
   cp "$HERE/kernel-stage/Image.gz" "$KPKG/Image.gz"
   echo "   staged: $(zcat "$KPKG/Image.gz" | grep -aoE '5\.10\.[0-9]+-Riza-[a-z]+' | head -1)"
@@ -968,7 +993,9 @@ def patch(path, marker, anchor, addition, after=True, count=1):
     """Insert `addition` around the first `anchor`, unless `marker` is present."""
     with open(path) as f:
         src = f.read()
-    name = os.path.basename(path)
+    # parent dir included: layout/tiles.xml and layout-land/tiles.xml are two
+    # different files and a bare basename makes their log lines identical.
+    name = "%s/%s" % (os.path.basename(os.path.dirname(path)), os.path.basename(path))
     if marker in src:
         print("   %s: already patched" % name)
         return
@@ -1074,20 +1101,28 @@ patch(
     "        chargeUtils.bypass = false\n",
 )
 
-# --- the tile in the game-bar panel (GridLayout, columnCount=2 -> 3 rows) ---
-patch(
-    os.path.join(gs, "res/layout/tiles.xml"),
-    "BypassChargeTile",
-    """    <io.chaldeaprjkt.gamespace.widget.tiles.NotificationTile
+# --- the tile in the game-bar panel: BOTH layouts ---
+# res/layout/tiles.xml is columnCount=2 (the 6th tile makes it 3 even rows) and
+# res/layout-land/tiles.xml is a SEPARATE file at columnCount=3 (2 even rows).
+# Landscape is the one that matters: a game runs landscape, so patching only the
+# portrait file ships a tile that is invisible in the exact situation the
+# feature exists for. That is what happened -- the tile was verified on hardware
+# in portrait on 2026-07-29 and reported missing in-game three builds later.
+# The NotificationTile anchor is byte-identical in both files.
+for _tiles in ("res/layout/tiles.xml", "res/layout-land/tiles.xml"):
+    patch(
+        os.path.join(gs, _tiles),
+        "BypassChargeTile",
+        """    <io.chaldeaprjkt.gamespace.widget.tiles.NotificationTile
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 """,
-    """
+        """
     <io.chaldeaprjkt.gamespace.widget.tiles.BypassChargeTile
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 """,
-)
+    )
 
 # --- string ---
 patch(
@@ -1097,6 +1132,14 @@ patch(
     '    <string name="bypass_charge_title">Bypass charging</string>\n',
 )
 EOP
+
+# 19b-verify: the tile must be in BOTH layouts. Missing from layout-land/ is not
+# a cosmetic gap -- it is a tile that does not exist while you are in a game.
+for _l in layout layout-land; do
+  grep -q "BypassChargeTile" "$GS/res/$_l/tiles.xml" || {
+    echo "   *** FATAL: BypassChargeTile missing from res/$_l/tiles.xml"; exit 1; }
+done
+echo "   tile present in portrait AND landscape layouts"
 
 # 19c: sepolicy -- the one rule the whole feature needs.
 if ! grep -q "sysfs_aichg_file" "$SEPOL/system_app.te" 2>/dev/null; then
@@ -1955,6 +1998,29 @@ fi
 echo "== step 33: charger-mode service name =="
 MTKRC="$TREE/device/itel/S666LN/rootdir/etc/init/hw/init.mt6789.rc"
 KRC="$TREE/vendor/itel/S666LN/proprietary/etc/init/kpoc_charger.rc"
+
+# N/A on the independently-authored device tree, which never had this bug.
+#
+# The defect this step fixes is specific to the older tree: its init.mt6789.rc
+# gated charger-mode setup on `on property:init.svc.vendor.charger=running`
+# while the service that actually ran was `kpoc_charger`, so the block never
+# executed and the fuel gauge never started -- hence charging with no percentage.
+#
+# riza220201/device_itel_S666LN uses the plain AOSP `on charger` trigger
+# (init.mt6789.rc:82), which init evaluates directly in charger mode, and starts
+# `fuelgauged` / `fuelgauged_nvram` inside that block (lines 112-113); both
+# binaries and their rc files are in proprietary-files.txt. There is no property
+# gate to get wrong, and no kpoc_charger.rc at all -- kpoc_charger is a stock
+# /system/bin binary and this ROM builds system from source, so charger mode is
+# AOSP's own `charger`.
+#
+# Skip rather than fail: absence of kpoc_charger.rc is the correct state here.
+if [ ! -f "$KRC" ]; then
+  echo "   N/A: no kpoc_charger.rc -- device tree uses the AOSP 'on charger' trigger"
+  grep -q "^on charger" "$MTKRC" 2>/dev/null \
+    && echo "   verified: init.mt6789.rc has 'on charger'" \
+    || echo "   *** WARN: no 'on charger' trigger either -- check charger mode on device"
+else
 for f in "$MTKRC" "$KRC"; do
   [ -f "$f" ] || { echo "   *** FATAL: $f not found"; exit 1; }
 done
@@ -1994,6 +2060,47 @@ fi
   echo "   *** FATAL: on charger does not start vendor.charger"; exit 1; }
 [ "$(grep -c 'kpoc_charger' "$KRC")" = "1" ] || {
   echo "   *** FATAL: expected exactly one kpoc_charger reference left (the binary path)"; exit 1; }
+fi
+
+# --- step 34: GApps duplicates a library the platform already installs -------
+# MindTheGapps PRODUCT_COPY_FILES libjni_latinimegoogle.so into product/lib{,64},
+# and LineageOS's LatinIME installs the SAME library there through a proper soong
+# module (packages/inputmethods/LatinIME/java/Android.bp, cc_prebuilt_library_shared,
+# prefer: true). Two owners of one path is a hard kati failure:
+#
+#   build/make/core/Makefile:72: error: overriding commands for target
+#     out/target/product/S666LN/product/lib/libjni_latinimegoogle.so,
+#     previously defined at out/soong/installs-lineage_S666LN.mk
+#
+# Verified byte-identical on both ABIs before dropping either side:
+#   arm   442a2a8bfcb25489564bc943...   arm64  b1049983e6ac5cfc6d1c66e3...
+# so nothing is lost. The soong module is kept because it is the better mechanism
+# (proper module, arch-dispatched, participates in dependency resolution) and
+# because the GApps side is the redundant copy.
+#
+# This did not surface on earlier releases: those used a different, WIP device
+# tree whose package set never paired MindTheGapps with LineageOS's LatinIME.
+echo "== step 34: drop GApps' duplicate libjni_latinimegoogle =="
+GVMK="$TREE/vendor/gapps/arm64/arm64-vendor.mk"
+if [ ! -f "$GVMK" ]; then
+  echo "   N/A: no vendor/gapps (vanilla build)"
+elif grep -q "libjni_latinimegoogle" "$GVMK"; then
+  for abi in lib lib64; do
+    P="$TREE/packages/inputmethods/LatinIME/java/assets/$([ "$abi" = lib ] && echo lib || echo lib64)/libjni_latinimegoogle.so"
+    [ -f "$P" ] || { echo "   *** FATAL: platform copy missing for $abi -- do NOT drop the GApps one"; exit 1; }
+  done
+  sed -i "/libjni_latinimegoogle/d" "$GVMK"
+  # the entry before it now ends in a dangling backslash if it was last -- normalize
+  python3 - "$GVMK" <<'EOP'
+import sys,re
+p=sys.argv[1]; s=open(p).read()
+s=re.sub(r"\\\s*\n(\s*\n|\Z)", r"\n\1", s)
+open(p,"w").write(s)
+EOP
+  echo "   removed (platform module provides both ABIs)"
+else
+  echo "   already patched"
+fi
 
 echo "===================================================================="
 echo " apply-overlays complete"
