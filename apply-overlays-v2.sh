@@ -996,6 +996,45 @@ else
   echo "   patched"
 fi
 
+# --- step 36: stop hardware/mediatek defining the AIDL power impl -----------
+# Same class as step 35: a defect we cannot work around from the device side,
+# in a repo the device tree does not own (hardware/mediatek is LineageOS's).
+#
+# hardware/mediatek/aidl/power-mediatek builds
+# android.hardware.power-service-mediatek. This device must use STOCK's copy of
+# that library instead -- itel's prebuilt mtkpower@1.0-service is compiled
+# against stock's libpowerhal, and pairing it with the source build aborts at
+# runtime inside libpowerhal_Init(1) (measured on hardware 2026-08-11; the HIDL
+# half registers, the AIDL thread dies in Power::Power()).
+#
+# The device tree therefore ships stock's .so through PRODUCT_COPY_FILES. That
+# is not enough on its own: base_rules.mk:533 creates an install rule for the
+# module's output as soon as the module is DEFINED, whether or not anything
+# requests it, so both rules target the same path and kati refuses:
+#
+#   Makefile:72: error: overriding commands for target
+#     out/target/product/S666LN/vendor/lib64/android.hardware.power-service-mediatek.so
+#
+# Scoped to this device rather than deleted outright, so the same
+# hardware/mediatek checkout still builds every other MTK target normally.
+#
+# DURABLE FIX: same as step 35 -- upstream a guard, or carry a fork of
+# android_hardware_mediatek.
+echo "== step 36: exclude hardware/mediatek's AIDL power impl for S666LN =="
+PWRMK="$TREE/hardware/mediatek/aidl/power-mediatek/Android.mk"
+if [ ! -f "$PWRMK" ]; then
+  echo "   N/A: hardware/mediatek/aidl/power-mediatek not synced"
+elif head -1 "$PWRMK" | grep -q 'S666LN'; then
+  echo "   already patched"
+else
+  sed -i '1i ifeq (,$(filter S666LN,$(TARGET_DEVICE)))' "$PWRMK"
+  printf 'endif\n' >> "$PWRMK"
+  head -1 "$PWRMK" | grep -q 'S666LN' || { echo "   *** FATAL: guard not applied"; exit 1; }
+  tail -1 "$PWRMK" | grep -q '^endif$' || { echo "   *** FATAL: endif not appended"; exit 1; }
+  echo "   patched (module now defined only for non-S666LN targets)"
+fi
+
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
