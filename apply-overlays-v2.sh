@@ -448,8 +448,20 @@ if "if (!SPOOF_ENABLED) return;\n        propsToChangeGeneric" not in s:
     if n != 1:
         raise SystemExit("   *** FATAL: could not find setProps(Context) to gate")
 
-io.open(p, "w", encoding="utf-8").write(s)
-print("   PixelPropsUtils: SPOOF_ENABLED=false; %d gate(s) retired onto it" % (a + b))
+# 🔴 WRITE ONLY IF THE CONTENT ACTUALLY CHANGED.
+# ninja keys on mtime, not content, and this file is in frameworks/base -- so an
+# unconditional rewrite with identical bytes invalidates the whole metalava API
+# stub chain (system-api-stubs-docs-non-updatable and friends), which is 30+
+# minutes on the local box. This step is idempotent in CONTENT and was not
+# idempotent in MTIME, so re-running the recipe -- which the header explicitly
+# invites, "Re-run after any repo sync" -- silently cost a stub rebuild every
+# time. Measured 2026-08-18 after ~8 runs in one session.
+orig = io.open(p, encoding="utf-8").read()
+if s != orig:
+    io.open(p, "w", encoding="utf-8").write(s)
+    print("   PixelPropsUtils: SPOOF_ENABLED=false; %d gate(s) retired onto it" % (a + b))
+else:
+    print("   PixelPropsUtils: already patched, file untouched (mtime preserved)")
 EOP
 else
   echo "   WARN: $PPU not found — crDroid may have renamed it; re-check the spoofing path"

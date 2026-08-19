@@ -22,8 +22,12 @@
 #   3. bash ~/itel_rs4_Crdroid/sign-release.sh    (-> crDroidAndroid-...-signed.zip)
 export PATH=$HOME/bin:$PATH
 export USE_CCACHE=1
-export CCACHE_DIR=$HOME/.ccache
-ccache -M 50G >/dev/null 2>&1
+# Overridable, same ${VAR:-default} convention sign-release.sh already uses for TOP.
+# The default is only safe where $HOME has room: on the local build box $HOME is on
+# / with ~52 GB free, so `ccache -M 50G` there fills the root filesystem. Point
+# CCACHE_DIR at the build disk instead. 2026-08-17, when the VM went away.
+export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
+ccache -M "${CCACHE_SIZE:-50G}" >/dev/null 2>&1
 
 # ro.build.version.incremental. The build otherwise substitutes a unix timestamp,
 # which is what produced the bogus ".../1785172498:user/release-keys" fingerprint.
@@ -31,7 +35,7 @@ ccache -M 50G >/dev/null 2>&1
 # ...-eng.nobody (crDroid pins BUILD_USERNAME := nobody).
 export BUILD_NUMBER=251212V1661
 
-cd ~/crdroid || exit 2
+cd "${TOP:-$HOME/crdroid}" || exit 2
 
 # Guards: the RC is meaningless if the overlays were not applied.
 grep -q "vendor/crdroid-keys/releasekey" device/itel/S666LN/device.mk 2>/dev/null || {
