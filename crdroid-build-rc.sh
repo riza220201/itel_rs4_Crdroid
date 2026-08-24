@@ -35,6 +35,22 @@ ccache -M "${CCACHE_SIZE:-50G}" >/dev/null 2>&1
 # ...-eng.nobody (crDroid pins BUILD_USERNAME := nobody).
 export BUILD_NUMBER=251212V1661
 
+# ro.rs4.build.stamp -- what PackageManager compares to decide "is this an update?"
+#
+# ro.build.version.incremental is pinned to the stock identity above, which is
+# exactly what AOSP's upgrade test compares, so mIsUpgrade is permanently false
+# and dexopt profiles, app profiles, new system apps, code-cache clearing and
+# privapp permission changes are all dead on this ROM. device/itel/S666LN's
+# device.mk turns this into ro.rs4.build.stamp and the frameworks/base patch
+# reads it; the reported identity is untouched.
+#
+# ⚠ SET ONCE, HERE, PER RELEASE BUILD -- not in device.mk. Generated inside the
+# build it would change on every incremental `m` and make EVERY boot look like an
+# upgrade, which re-runs a permission regrant and clears every package's code
+# cache each time. One value per release, shared by every artifact in it.
+export RS4_BUILD_STAMP="$(date -u +%Y%m%d%H%M%S)"
+echo "== RS4_BUILD_STAMP=${RS4_BUILD_STAMP}"
+
 cd "${TOP:-$HOME/crdroid}" || exit 2
 
 # Guards: the RC is meaningless if the overlays were not applied.
