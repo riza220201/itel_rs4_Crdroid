@@ -1047,6 +1047,324 @@ else
 fi
 
 
+
+# ---------------------------------------------------------------------------
+# STEP 37 -- ART: saturate num_bytes_allocated_ instead of wrapping.
+#
+# Heap::RecordFree subtracts with a plain fetch_sub and a comment saying it
+# "relies on 2s complement for handling negative freed_bytes". True for the
+# NEGATIVE case (a space transition, really an add). False when freed_bytes is
+# POSITIVE and exceeds the counter -- nothing adds the deficit back.
+#
+# Measured on hardware 2026-08-28, com.ss.android.ugc.trill, 5/5 runs, 13 s from
+# launch:
+#   Background CC GC freed 19MB AllocSpace, 15MB LOS, 42% free, 21MB/37MB
+#   Explicit   CC GC freed 21MB AllocSpace, 30MB LOS,  0% free,
+#                                            17179869183GB/17179869183GB
+#   Throwing OutOfMemoryError "Failed to allocate a 48 byte allocation with
+#   0 free bytes ... target footprint 37288872, growth limit 536870912"
+# The counter held 21MB; the next GC subtracted 21+30MB. Once wrapped to ~2^64
+# the heap is dead permanently: every allocation throws, all 352 app threads
+# pile onto "Waiting for a blocking GC Alloc", 450-600 ms GCs back to back, the
+# app freezes and ART aborts. The invariant is already checked here by
+# RACING_DCHECK_LE, which is compiled out of user builds; RecordFreeRevoke()
+# twenty lines below guards the same subtraction with a live CHECK_GE
+# << "num_bytes_allocated_ underflow". This makes the two agree, saturating
+# rather than aborting.
+#
+# Proven independently: -XX:LargeObjectThreshold=256m (all large objects out of
+# the LOS) also gives 0 underflows / 0 OOM / 5 blocking-GC waits vs 416, and
+# restoring the default 12288 brings the failure straight back.
+#
+# DURABLE FIX: fork crdroidandroid/android_art, or upstream it.
+echo "== step 37: ART RecordFree underflow clamp =="
+HEAPCC="$TREE/art/runtime/gc/heap.cc"
+if [ ! -f "$HEAPCC" ]; then
+  echo "   *** FATAL: art/runtime/gc/heap.cc not found"; exit 1
+elif grep -q 'num_bytes_allocated_ underflow clamped' "$HEAPCC"; then
+  echo "   already patched"
+else
+  python3 - "$HEAPCC" <<'PYART'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = ("  // Note: This relies on 2s complement for handling negative freed_bytes.\n"
+       "  num_bytes_allocated_.fetch_sub(static_cast<ssize_t>(freed_bytes), std::memory_order_relaxed);\n")
+new = ("""  if (LIKELY(freed_bytes > 0)) {
+    // Saturate at zero rather than wrapping. RACING_DCHECK_LE above is compiled out of user
+    // builds, and a positive freed_bytes CAN exceed the counter (measured: the large object
+    // space crediting more freed bytes than were ever added). Unlike the negative case below
+    // that wrap is not self-correcting -- num_bytes_allocated_ becomes ~2^64 and every
+    // subsequent allocation throws OutOfMemoryError for the life of the process.
+    size_t cur = num_bytes_allocated_.load(std::memory_order_relaxed);
+    const size_t sub = static_cast<size_t>(freed_bytes);
+    size_t next;
+    bool clamped;
+    do {
+      clamped = sub > cur;
+      next = clamped ? 0u : cur - sub;
+    } while (!num_bytes_allocated_.compare_exchange_weak(cur, next, std::memory_order_relaxed));
+    if (UNLIKELY(clamped)) {
+      LOG(WARNING) << "num_bytes_allocated_ underflow clamped: freed " << freed_bytes
+                   << " bytes against a counter of " << cur;
+    }
+  } else {
+    // Negative freed_bytes is a legitimate increase (padding/binning across space
+    // transitions). Keep the original 2s-complement add.
+    num_bytes_allocated_.fetch_sub(static_cast<ssize_t>(freed_bytes), std::memory_order_relaxed);
+  }
+""")
+if s.count(old) != 1:
+    sys.exit("anchor count %d, expected 1" % s.count(old))
+open(p, "w").write(s.replace(old, new, 1))
+PYART
+  [ $? -eq 0 ] || { echo "   *** FATAL: ART patch failed"; exit 1; }
+  grep -q 'num_bytes_allocated_ underflow clamped' "$HEAPCC" || { echo "   *** FATAL: clamp not present after patch"; exit 1; }
+  grep -q 'compare_exchange_weak(cur, next' "$HEAPCC" || { echo "   *** FATAL: CAS loop missing"; exit 1; }
+  echo "   patched (RecordFree saturates; negative freed_bytes path unchanged)"
+fi
+
+# ---------------------------------------------------------------------------
+# STEP 38 -- GameManagerService publishes sys.gamemode.active.
+#
+# The device tree wants a game-scoped sched_pelt_multiplier (init.cgroup.rc,
+# on property:sys.gamemode.active). MEASURED 2026-08-28: nothing on this device
+# publishes a game-foreground signal init can trigger on -- a full getprop diff
+# between launcher-foreground and ZZZ-foreground shows only signal strength and
+# two cache keys moving, while "Game power mode ON" fires in the same second.
+# MTK's power HAL takes Mode.GAME and exposes nothing.
+#
+# So publish it from where the state is already computed, beside the existing
+# setPowerMode(Mode.GAME, ...) calls. No sepolicy work: "sys." maps to
+# system_prop (system/sepolicy/private/property_contexts:23) and
+# set_prop(system_server, system_prop) is granted (private/system_server.te:703).
+# Fully-qualified so no import is added.
+#
+# Why game-scoped and not global: pelt=4 measured 43% -> 19% of seconds carrying
+# a >100ms frame in ZZZ (5 of 5 alternating blocks), but also warmed the battery
+# faster (+1.50 vs +0.33 C per 2-min block).
+#
+# DURABLE FIX: fork crdroidandroid/android_frameworks_base, or upstream it.
+echo "== step 38: GameManagerService publishes sys.gamemode.active =="
+GMS="$TREE/frameworks/base/services/core/java/com/android/server/app/GameManagerService.java"
+if [ ! -f "$GMS" ]; then
+  echo "   *** FATAL: GameManagerService.java not found"; exit 1
+elif grep -q 'sys.gamemode.active' "$GMS"; then
+  echo "   already patched"
+else
+  python3 - "$GMS" <<'PYGMS'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+on_old  = "                    mPowerManagerInternal.setPowerMode(Mode.GAME, true);\n"
+on_new  = on_old + '                    android.os.SystemProperties.set("sys.gamemode.active", "1");\n'
+off_old = "                mPowerManagerInternal.setPowerMode(Mode.GAME, false);\n"
+off_new = off_old + '                android.os.SystemProperties.set("sys.gamemode.active", "0");\n'
+for a in (on_old, off_old):
+    if s.count(a) != 1:
+        sys.exit("anchor count %d, expected 1" % s.count(a))
+s = s.replace(on_old, on_new, 1).replace(off_old, off_new, 1)
+open(p, "w").write(s)
+PYGMS
+  [ $? -eq 0 ] || { echo "   *** FATAL: GameManagerService patch failed"; exit 1; }
+  [ "$(grep -c 'sys.gamemode.active' "$GMS")" = "2" ] || { echo "   *** FATAL: expected 2 setters"; exit 1; }
+  echo "   patched (ON and OFF setters beside setPowerMode(Mode.GAME, ...))"
+fi
+
+
+# ---------------------------------------------------------------------------
+# STEP 39 -- libvulkan: declare the two VkNativeBufferANDROID fields Mali r54p1
+#            reads past the end of our spec-8 struct.
+#
+# vk_android_native_buffer.h in this tree is VK_ANDROID_NATIVE_BUFFER_SPEC_VERSION
+# 8, so sizeof(VkNativeBufferANDROID) is 56 (arm64) / 40 (arm). Mali r54p1 was
+# built against a longer one and reads TWO fields past the end -- and
+# dereferences the second.
+#
+# MEASURED, not inferred: disassembly of libGLES_mali r54p1-12eac0. The chain
+# walk for VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID (0x3b9af110) hands the struct
+# to one function, and these are its ONLY reads of it, in both ABIs:
+#
+#   arm64   ldrsw x0,  [nb, #0x20]   usage, a spec-8 field
+#           ldr   x0,  [nb, #0x38]   +56  uint64, an extended gralloc usage
+#           ldr   x25, [nb, #0x40]   +64  AHardwareBuffer*
+#                                         -> AHardwareBuffer_getNativeHandle(x25)
+#   arm     ldr   r0,  [r7, #0x14]   usage
+#           ldrd  r0,r1,[r7, #40]    +40  the same uint64
+#           ldr   r8,  [r7, #0x30]   +48  AHardwareBuffer*
+#
+# Unpatched, the driver picks up whatever the compiler parked after our struct on
+# OUR stack. It got 0x3b9af111 -- the sType of swapchain_image_create, the local
+# declared immediately above -- and dereferenced it:
+#   #00 AHardwareBuffer_getNativeHandle  #01/#02 libGLES_mali
+#   #03 CreateSwapchainKHR  #04 libunity      SIGSEGV, fault addr 0x3b9af181
+# Identical across two 89%-different r54p1 builds, the r54p1 ICD stub, a
+# correctly-built r54p1 kbase, and four other substitutions -- because the bad
+# value was never on the driver's side of the boundary. MLBB, same engine, was
+# never affected: an internal driver constant cannot be selective about which
+# Unity title it breaks; a stack over-read can.
+#
+# extended_usage stays 0: we have no such value to report, and the driver only
+# tests it against registered vendor usage masks (it extracts bit 32, or ANDs it
+# with a table mask). The usage it acts on comes from usage/usage2, which are
+# filled as before.
+#
+# Declaring the fields as a struct gives the right layout in BOTH ABIs by
+# construction -- verified in our own build: arm64 stores the AHB at nb+64,
+# arm at nb+48.
+#
+# Harmless to r32p1/r38p1, which never read past the struct they were built
+# against, so this is safe to carry on an r38p1 build.
+#
+# VERIFIED ON HARDWARE 2026-09-01: ZZZ (com.HoYoverse.Nap) launches, logs in and
+# renders, 35 swapchain images over 5 swapchains, 0 faults, 0 "3b9af". The
+# libui/libnativewindow patches below were NOT present in that run -- this step
+# alone is what carries it.
+#
+# DURABLE FIX: fork crdroidandroid/android_frameworks_native, or upstream it.
+echo "== step 39: libvulkan VkNativeBufferANDROID extended fields (r54p1) =="
+SWAPCPP="$TREE/frameworks/native/vulkan/libvulkan/swapchain.cpp"
+if [ ! -f "$SWAPCPP" ]; then
+  echo "   *** FATAL: vulkan/libvulkan/swapchain.cpp not found"; exit 1
+elif grep -q 'native_buffer.ahb' "$SWAPCPP"; then
+  echo "   already patched"
+else
+  python3 - "$SWAPCPP" <<'PYSWAP'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+
+inc_old = "#include <system/window.h>\n"
+inc_new = ("#include <system/window.h>\n"
+           "#include <vndk/window.h>\n"
+           "#include <android/hardware_buffer.h>\n")
+
+nb_old = ("    VkNativeBufferANDROID image_native_buffer = {\n"
+          "#pragma clang diagnostic push\n"
+          "#pragma clang diagnostic ignored \"-Wold-style-cast\"\n"
+          "        .sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID,\n"
+          "#pragma clang diagnostic pop\n"
+          "        .pNext = &swapchain_image_create,\n"
+          "    };\n")
+nb_new = ("""    // Mali r54p1 -- and any UMD built against a newer VK_ANDROID_native_buffer
+    // than the SPEC_VERSION 8 struct this tree defines -- reads TWO fields past
+    // the end of VkNativeBufferANDROID and dereferences the second one.
+    //
+    // Measured by disassembling libGLES_mali r54p1-12eac0. These are the driver's
+    // ONLY reads of this struct, in both ABIs:
+    //
+    //   arm64   ldrsw x0,  [nb, #0x20]   usage, the spec-8 field
+    //           ldr   x0,  [nb, #0x38]   +56  uint64, an extended gralloc usage
+    //           ldr   x25, [nb, #0x40]   +64  AHardwareBuffer*
+    //                                         -> AHardwareBuffer_getNativeHandle
+    //   arm     ldr   r0,  [nb, #0x14]   usage
+    //           ldrd  r0,r1,[nb, #40]    +40  the same uint64
+    //           ldr   r8,  [nb, #0x30]   +48  AHardwareBuffer*
+    //
+    // Declaring the two extra fields as a struct produces exactly that layout in
+    // both ABIs. Without them the driver picks up whatever the compiler parked
+    // after the struct on our stack: the crash passed 0x3b9af111 -- the sType of
+    // swapchain_image_create, the local declared immediately above -- to
+    // AHardwareBuffer_getNativeHandle, which dereferenced it.
+    //
+    // extended_usage stays 0. We have no such value to report, and the driver only
+    // tests it against registered vendor usage masks; the usage it acts on comes
+    // from the usage/usage2 fields below, which we do fill.
+    //
+    // Harmless to r32p1/r38p1, which never read past the struct they were built
+    // against.
+    struct {
+        VkNativeBufferANDROID nb;
+        uint64_t extended_usage;
+        AHardwareBuffer* ahb;
+    } native_buffer = {};
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wold-style-cast"
+    native_buffer.nb.sType = VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID;
+#pragma clang diagnostic pop
+    native_buffer.nb.pNext = &swapchain_image_create;
+    VkNativeBufferANDROID& image_native_buffer = native_buffer.nb;
+""")
+
+loop_old = "        image_native_buffer.usage = int(img.buffer->usage);\n"
+loop_new = (loop_old +
+"""        /* +64 (arm64) / +48 (arm): the AHardwareBuffer the driver calls
+         * AHardwareBuffer_getNativeHandle on. ANativeWindowBuffer_getHardwareBuffer
+         * is a cast of the GraphicBuffer we already hold -- it takes no reference,
+         * so there is nothing to release. */
+        native_buffer.ahb = ANativeWindowBuffer_getHardwareBuffer(img.buffer.get());
+        ALOGI("RS4DIAG nb_ext: ahb=%p usage3=0", (void*)native_buffer.ahb);
+""")
+
+for a, n in ((inc_old, 1), (nb_old, 1), (loop_old, 1)):
+    if s.count(a) != n:
+        sys.exit("anchor count %d, expected %d" % (s.count(a), n))
+s = s.replace(inc_old, inc_new, 1).replace(nb_old, nb_new, 1).replace(loop_old, loop_new, 1)
+open(p, "w").write(s)
+PYSWAP
+  [ $? -eq 0 ] || { echo "   *** FATAL: swapchain.cpp patch failed"; exit 1; }
+  grep -q 'uint64_t extended_usage;' "$SWAPCPP" || { echo "   *** FATAL: extended_usage field missing"; exit 1; }
+  grep -q 'AHardwareBuffer\* ahb;' "$SWAPCPP"   || { echo "   *** FATAL: ahb field missing"; exit 1; }
+  grep -q 'ANativeWindowBuffer_getHardwareBuffer' "$SWAPCPP" || { echo "   *** FATAL: ahb never assigned"; exit 1; }
+  grep -q '#include <vndk/window.h>' "$SWAPCPP" || { echo "   *** FATAL: include missing"; exit 1; }
+  echo "   patched (extended_usage at +56/+40, AHardwareBuffer* at +64/+48)"
+fi
+
+# ---------------------------------------------------------------------------
+# STEP 40 -- AHardwareBuffer_allocate: never leave *outBuffer indeterminate.
+#
+# AOSP's early returns write nothing to the out-param, so a caller that ignores
+# the return code keeps whatever its variable happened to hold. getNativeHandle
+# checks for null; it cannot check for garbage.
+#
+# ⚠ HONEST SCOPE: this is NOT what fixes the r54p1 crash, and the r54p1 crash is
+# not evidence for it. Proven: the 2026-09-01 passing run used the SHIPPED
+# libnativewindow, which does not have this patch (disassembled --
+# `str xzr, [x19]` at AHardwareBuffer_allocate+0x40 is present in our build and
+# absent in v2build6's). Step 39 alone carries that result.
+#
+# It lands anyway on its own terms: an out-param left indeterminate on a failure
+# path is a defect regardless of who reads it, and this device DOES produce those
+# failures -- Mali r54p1 probes HAL_PIXEL_FORMAT_R_8 (56), which this gralloc
+# generation cannot allocate, on every Unity launch.
+#
+# NOT LANDED, deliberately: the R_8/R_16_UINT -> Y8/Y16 fallback in
+# libs/ui/GraphicBufferAllocator.cpp. It was measured NOT to fire in the passing
+# run (0 hits against a working positive control), so nothing needs it, and it
+# would silently substitute a YUV-family format for a colour format on a path
+# nobody is watching. The diagnosis is in notes/JOURNAL.md; the code is not here.
+#
+# DURABLE FIX: fork crdroidandroid/android_frameworks_native, or upstream it.
+echo "== step 40: AHardwareBuffer_allocate clears *outBuffer on failure =="
+AHB="$TREE/frameworks/native/libs/nativewindow/AHardwareBuffer.cpp"
+if [ ! -f "$AHB" ]; then
+  echo "   *** FATAL: libs/nativewindow/AHardwareBuffer.cpp not found"; exit 1
+elif grep -q 'outBuffer indeterminate' "$AHB"; then
+  echo "   already patched"
+else
+  python3 - "$AHB" <<'PYAHB'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = ("    if (!outBuffer || !desc) return BAD_VALUE;\n")
+new = ("""    if (!outBuffer || !desc) return BAD_VALUE;
+    // Never leave *outBuffer indeterminate. AOSP's early returns below do not
+    // write it, so a caller that ignores the return code keeps whatever its
+    // variable happened to hold -- and AHardwareBuffer_getNativeHandle's null
+    // check cannot catch garbage, only null. Mali r54p1 ignores the result of
+    // the HAL_PIXEL_FORMAT_R_8 probe this gralloc generation always fails.
+    *outBuffer = nullptr;
+""")
+if s.count(old) != 1:
+    sys.exit("anchor count %d, expected 1" % s.count(old))
+open(p, "w").write(s.replace(old, new, 1))
+PYAHB
+  [ $? -eq 0 ] || { echo "   *** FATAL: AHardwareBuffer patch failed"; exit 1; }
+  grep -q '\*outBuffer = nullptr;' "$AHB" || { echo "   *** FATAL: clear not present"; exit 1; }
+  echo "   patched (out-param cleared before any failure path)"
+fi
+
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
