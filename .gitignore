@@ -88,3 +88,7 @@ ramoops*.bin
 # each bug was found belongs with the device-tree project, not here.
 BYPASS-CHARGING-PROOF.md
 ONDEVICE-TEST-CHECKLIST.md
+
+# Editor/script backups. apply-overlays writes these when it patches itself.
+*.bak
+*.bak-*
