@@ -1365,6 +1365,103 @@ PYAHB
 fi
 
 
+# ---------------------------------------------------------------------------
+# STEP 41 -- libgui: report BufferQueue frames to ged, so GPU DVFS runs.
+#
+# 🔴 GPU DVFS HAS NEVER WORKED ON THIS ROM. Measured 2026-09-01 on v3.1 with the
+# GPU powered and rendering: ged_dvfs_run 0 hits over 20 s, gpu_utilization
+# "0 0 100" WHILE RENDERING, GPU pinned at OPP 0 of 38. Identical with the r38p1
+# UMD, so it is not an r54p1 regression -- it is every build this project has
+# shipped, and the kbase side is fine (kbase_pm_metrics_active_calc fires 56338
+# times in the same window; the commit path moves the GPU 1003->756 MHz on demand).
+#
+# The gap is that ged's policy loop only runs when ged is told a frame happened.
+# MediaTek reports that from libgui, which dlopens libged_kpi.so and calls it on
+# the BufferQueue paths. AOSP's libgui does not. Stock's own libgui carries
+# android::GedKpiDebug + GedKpiModuleLoader and the string "open libged_kpi.so
+# failed", i.e. it is an OPTIONAL hook -- which is why this is a small patch and
+# not a fork.
+#
+# The ABI was decoded from stock (we have no MediaTek source): the 8 wrappers in
+# libged_kpi.so are 4-20 byte forwarders whose C++-mangled targets in libged_sys.so
+# carry the types. Full derivation in notes/JOURNAL.md 2026-09-01.
+#
+# 🔴 queue's third argument is QedBuffer_length -- the QUEUE DEPTH, not the slot.
+# It reaches ged_gpu_timestamp as that field (struct GED_BRIDGE_IN_GPU_TIMESTAMP).
+# The slot index was the obvious guess and would have compiled, run, and steered
+# the DVFS governor on a slot number with no crash and no log line.
+#
+# Fails soft: no libged_kpi.so -> every hook is a no-op, exactly like stock.
+# The blobs ship from device/itel/S666LN/prebuilts/gedkpi (stock system, rev 28).
+#
+# DURABLE FIX: fork crdroidandroid/android_frameworks_native, or upstream it.
+echo "== step 41: libgui reports BufferQueue frames to ged (GPU DVFS) =="
+GUIDIR="$TREE/frameworks/native/libs/gui"
+if [ ! -d "$GUIDIR" ]; then
+  echo "   *** FATAL: frameworks/native/libs/gui not found"; exit 1
+elif [ -f "$GUIDIR/GedKpiHook.h" ] && grep -q "gedkpi::onQueue" "$GUIDIR/BufferQueueProducer.cpp"; then
+  echo "   already patched"
+else
+  cp "$HERE/gedkpi/GedKpiHook.h" "$GUIDIR/GedKpiHook.h" || { echo "   *** FATAL: GedKpiHook.h missing from the recipe"; exit 1; }
+  python3 - "$GUIDIR" <<'PYGUI'
+import sys, os
+d = sys.argv[1]
+
+def add_include(fn):
+    p = os.path.join(d, fn); s = open(p).read()
+    if '"GedKpiHook.h"' in s: return
+    i = s.rindex('#include', 0, s.index('namespace android'))
+    e = s.index('\n', i) + 1
+    open(p, 'w').write(s[:e] + '\n#include "GedKpiHook.h"\n' + s[e:])
+
+for f in ("BufferQueueCore.cpp", "BufferQueueProducer.cpp", "BufferQueueConsumer.cpp"):
+    add_include(f)
+
+p = os.path.join(d, "BufferQueueCore.cpp"); s = open(p).read()
+a = "        mUnusedSlots.push_front(s);\n    }\n}\n\nBufferQueueCore::~BufferQueueCore() {}"
+if s.count(a) != 1: sys.exit("BufferQueueCore anchor count %d" % s.count(a))
+s = s.replace(a, "        mUnusedSlots.push_front(s);\n    }\n    gedkpi::onCreate(mUniqueId);\n}\n\n"
+                 "BufferQueueCore::~BufferQueueCore() {\n    gedkpi::onDestroy(mUniqueId);\n}", 1)
+open(p, 'w').write(s)
+
+p = os.path.join(d, "BufferQueueProducer.cpp"); s = open(p).read()
+a = "        mCore->mBufferHasBeenQueued = true;\n        mCore->mDequeueCondition.notify_all();\n        mCore->mLastQueuedSlot = slot;\n"
+if s.count(a) != 1: sys.exit("queueBuffer anchor count %d" % s.count(a))
+s = s.replace(a, a + "\n        // Third argument is QedBuffer_length -- the QUEUE DEPTH, not the slot.\n"
+                     "        // item.mGraphicBuffer is cleared further below for non-SF consumers.\n"
+                     "        gedkpi::onQueue(mCore->mUniqueId, item.mGraphicBuffer, item.mFence,\n"
+                     "                        static_cast<int>(mCore->mQueue.size()));\n", 1)
+a = "    if (outBufferAge) {\n        *outBufferAge = mCore->mBufferAge;\n    }\n    addAndGetFrameTimestamps(nullptr, outTimestamps);\n"
+if s.count(a) != 1: sys.exit("dequeueBuffer anchor count %d" % s.count(a))
+s = s.replace(a, "    if (outBufferAge) {\n        *outBufferAge = mCore->mBufferAge;\n    }\n"
+                 "    gedkpi::onDequeue(mCore->mUniqueId, mSlots[*outSlot].mGraphicBuffer, *outFence);\n"
+                 "    addAndGetFrameTimestamps(nullptr, outTimestamps);\n", 1)
+a = "            mCore->mConnectedApi = api;\n"
+if s.count(a) != 1: sys.exit("connect anchor count %d" % s.count(a))
+s = s.replace(a, a + "            // getCallingPid() directly: mCore->mConnectedPid is not assigned\n"
+                     "            // until further below in this function.\n"
+                     "            gedkpi::onConnect(mCore->mUniqueId, api,\n"
+                     "                              BufferQueueThreadState::getCallingPid());\n", 1)
+a = "                    mCore->mConnectedApi = BufferQueueCore::NO_CONNECTED_API;\n"
+if s.count(a) != 1: sys.exit("disconnect anchor count %d" % s.count(a))
+s = s.replace(a, a + "                    gedkpi::onDisconnect(mCore->mUniqueId);\n", 1)
+open(p, 'w').write(s)
+
+p = os.path.join(d, "BufferQueueConsumer.cpp"); s = open(p).read()
+i = s.index("status_t BufferQueueConsumer::acquireBuffer")
+j = s.index("\n    return NO_ERROR;\n", i)
+s = s[:j] + "\n    gedkpi::onAcquire(mCore->mUniqueId, outBuffer->mGraphicBuffer);\n" + s[j:]
+open(p, 'w').write(s)
+PYGUI
+  [ $? -eq 0 ] || { echo "   *** FATAL: libgui gedkpi patch failed"; exit 1; }
+  grep -q "gedkpi::onQueue"   "$GUIDIR/BufferQueueProducer.cpp" || { echo "   *** FATAL: onQueue missing";   exit 1; }
+  grep -q "gedkpi::onDequeue" "$GUIDIR/BufferQueueProducer.cpp" || { echo "   *** FATAL: onDequeue missing"; exit 1; }
+  grep -q "gedkpi::onAcquire" "$GUIDIR/BufferQueueConsumer.cpp" || { echo "   *** FATAL: onAcquire missing"; exit 1; }
+  grep -q "gedkpi::onCreate"  "$GUIDIR/BufferQueueCore.cpp"     || { echo "   *** FATAL: onCreate missing";  exit 1; }
+  echo "   patched (create/destroy, connect/disconnect, dequeue/queue, acquire)"
+fi
+
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
