@@ -1397,12 +1397,19 @@ fi
 # DURABLE FIX: fork crdroidandroid/android_frameworks_native, or upstream it.
 echo "== step 41: libgui reports BufferQueue frames to ged (GPU DVFS) =="
 GUIDIR="$TREE/frameworks/native/libs/gui"
-if [ ! -d "$GUIDIR" ]; then
-  echo "   *** FATAL: frameworks/native/libs/gui not found"; exit 1
-elif [ -f "$GUIDIR/GedKpiHook.h" ] && grep -q "gedkpi::onQueue" "$GUIDIR/BufferQueueProducer.cpp"; then
-  echo "   already patched"
+[ -d "$GUIDIR" ] || { echo "   *** FATAL: frameworks/native/libs/gui not found"; exit 1; }
+
+# 🔴 The header is copied UNCONDITIONALLY, before the already-patched test.
+# It used to sit inside the else-branch, so once the .cpp call sites existed the
+# recipe reported "already patched" and left a STALE GedKpiHook.h in the build
+# tree -- a header fix could never reach a build. That is exactly the class of
+# defect RESUME 9b step 1 exists for: the tree the compiler reads is not the tree
+# you edit.
+cp "$HERE/gedkpi/GedKpiHook.h" "$GUIDIR/GedKpiHook.h" || { echo "   *** FATAL: GedKpiHook.h missing from the recipe"; exit 1; }
+
+if grep -q "gedkpi::onQueue" "$GUIDIR/BufferQueueProducer.cpp"; then
+  echo "   call sites already patched; GedKpiHook.h refreshed"
 else
-  cp "$HERE/gedkpi/GedKpiHook.h" "$GUIDIR/GedKpiHook.h" || { echo "   *** FATAL: GedKpiHook.h missing from the recipe"; exit 1; }
   python3 - "$GUIDIR" <<'PYGUI'
 import sys, os
 d = sys.argv[1]
@@ -1460,6 +1467,17 @@ PYGUI
   grep -q "gedkpi::onCreate"  "$GUIDIR/BufferQueueCore.cpp"     || { echo "   *** FATAL: onCreate missing";  exit 1; }
   echo "   patched (create/destroy, connect/disconnect, dequeue/queue, acquire)"
 fi
+
+# 🔴 Post-condition on BOTH paths: queue must hand ged fence_fd = -1.
+# A real fence there panics ged_kpi_gpu_3d_fence_sync_cb from mali_kbase's
+# job-done worker and bootloops the device (v3build5, 20260901091546). The
+# positive control is the dequeue call beside it, which legitimately still
+# passes a fence -- so a zero here is provably a real zero and not a broken grep.
+grep -q 'queueTag(id, -1, queuedBufferCount' "$GUIDIR/GedKpiHook.h" \
+  || { echo "   *** FATAL: GedKpiHook.h onQueue is not passing fence_fd = -1 (bootloop fix missing)"; exit 1; }
+grep -q 'dequeueTag(id, fd,' "$GUIDIR/GedKpiHook.h" \
+  || { echo "   *** FATAL: GedKpiHook.h control check failed -- onDequeue not found, the grep above proves nothing"; exit 1; }
+echo "   onQueue fence_fd = -1 confirmed (control: onDequeue still passes a fence)"
 
 
 echo "===================================================================="
