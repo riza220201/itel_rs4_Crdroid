@@ -1667,6 +1667,237 @@ grep -qE '^[[:space:]]+Recorder[[:space:]]*\\?$' "$FULLMK43" \
 echo "   Seedvault gone (control: Recorder still listed, block intact)"
 
 
+# --- step 44: ONE refresh-rate control, sorted, that locks instead of caps -----
+# Operator, 2026-09-02. v3build8 shipped the two upstream ListPreferences and
+# that exposed three defects at once. This step is the BEHAVIOUR half; the
+# RESOURCE half is device_itel_S666LN/overlay/packages/apps/Settings/. Neither
+# is useful alone and they must ship in the same build:
+#
+#   resource half  hides the min control (config_show_min_refresh_rate_switch),
+#                  retitles the survivor "Refresh rate" / "Kecepatan refresh"
+#   this half      sorts the list, adds "Smart", makes the one control write
+#                  BOTH bounds
+#
+# Why the sort and the Smart entry cannot be done in the overlay: the entries are
+# built PROGRAMMATICALLY in the controller's constructor from
+# Display.getSupportedModes(), so there is no resource for an overlay to replace.
+#
+# 🔴 SEMANTICS MEASURED ON HARDWARE BEFORE THIS WAS WRITTEN, screen ON, reading
+# the COMMITTED mode rather than the requested range (2026-09-02):
+#
+#   UI entry   min     peak    primaryRefreshRateRange   committed modeId
+#   Smart      0       120     [0 120]                   2   (120.00001 Hz)
+#   120Hz      120     120     [120 120]                 2
+#   90Hz       90      90      [90 90]                   3   (90 Hz)
+#   60Hz       60      60      [60 60]                   1   (60 Hz)
+#
+# The committed modeId MOVING is the part that matters: it proves these are real
+# panel mode changes, not merely a clamped range. mDesiredDisplayModeSpecs is a
+# REQUEST, and this project has been burned before by testing the first link of a
+# chain instead of the last one. It also settles the float question -- the panel
+# reports 120.00001 Hz, the control writes the string "120.00", and the framework
+# matches them, so no tolerance handling is needed here.
+#
+# 🔑 WHY "LOCKED" AND NOT "CAPPED". Upstream's control writes PEAK only, so
+# picking 90 means "anywhere from 60 to 90", and on this panel the framework
+# then sits at 60 for most content -- users read that as the setting not
+# working. Writing both bounds makes 90 mean 90. Smart is the one entry that
+# deliberately leaves the range open, and it is the default.
+#
+# ⚠ Smart writes min=0, NOT min=60 as the design note in RESUME said. They are
+# indistinguishable on this panel -- 60 is the LOWEST mode, so [0 120] and
+# [60 120] both permit exactly {60, 90, 120}, and both were measured landing on
+# modeId 2. min=0 is chosen because it is byte-identical to the shipped default
+# state, so "the user explicitly chose Smart" and "the user never touched the
+# control" cannot drift into two states that look the same and compare unequal.
+#
+# ⚠ "Smart" is deliberately NOT a string resource. Adding one would mean either a
+# new resource in the device tree (which would couple the ROM patch's
+# compilation to that overlay being present) or a second patch to cm_strings.xml
+# here. It is left as a literal for the same reason the "120Hz" labels beside it
+# are literals -- this controller already builds its entry text in code -- and
+# because it survives untranslated in every locale. Precedent is one row up the
+# same Settings screen: peak_refresh_rate_title is "Smooth Display" in
+# values-in/strings.xml too, untranslated by Google.
+#
+# Entry labels keep upstream's exact "%.02fHz" -> "120Hz" form (no space) so the
+# only visible change is the ORDER and the new first row.
+echo "== step 44: single sorted refresh-rate control that locks both bounds =="
+RRC="$TREE/packages/apps/Settings/src/com/android/settings/display/PeakRefreshRateListPreferenceController.java"
+if [ ! -f "$RRC" ]; then
+  echo "   *** FATAL: PeakRefreshRateListPreferenceController.java not found at $RRC"
+  exit 1
+fi
+python3 - "$RRC" <<'EOP44'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+
+MARKER = "SMART_ENTRY"
+if MARKER in s:
+    print("   controller: already patched")
+    raise SystemExit(0)
+
+def sub(src, anchor, repl, what):
+    if src.count(anchor) != 1:
+        raise SystemExit("FATAL: anchor for %s matched %d times, expected 1"
+                         % (what, src.count(anchor)))
+    return src.replace(anchor, repl, 1)
+
+# 1 -- Collections, for the sort.
+s = sub(s,
+    "import java.util.ArrayList;\n",
+    "import java.util.ArrayList;\nimport java.util.Collections;\n",
+    "import block")
+
+# 2 -- the Smart sentinel and the highest rate the panel offers.
+s = sub(s,
+    "    private List<String> mEntries = new ArrayList<>();\n"
+    "    private List<String> mValues = new ArrayList<>();\n",
+    "    private List<String> mEntries = new ArrayList<>();\n"
+    "    private List<String> mValues = new ArrayList<>();\n"
+    "\n"
+    "    // Smart == leave the range open: min 0, peak whatever the panel tops out\n"
+    "    // at. \"0.00\" is a safe sentinel because it can never collide with a real\n"
+    "    // mode -- a 0 Hz display mode does not exist.\n"
+    "    private static final String SMART_VALUE = \"0.00\";\n"
+    "    private static final String SMART_ENTRY = \"Smart\";\n"
+    "\n"
+    "    private float mPeakRate = DEFAULT_REFRESH_RATE;\n",
+    "fields")
+
+# 3 -- sort + dedupe + prepend Smart, replacing the verbatim-order loop.
+s = sub(s,
+    "            for (Display.Mode m : modes) {\n"
+    "                if (m.getPhysicalWidth() == mode.getPhysicalWidth() &&\n"
+    "                        m.getPhysicalHeight() == mode.getPhysicalHeight()) {\n"
+    "                    mEntries.add(String.format(\"%.02fHz\", m.getRefreshRate())\n"
+    "                            .replaceAll(\"[\\\\.,]00\", \"\"));\n"
+    "                    mValues.add(String.format(Locale.US, \"%.02f\", m.getRefreshRate()));\n"
+    "                }\n"
+    "            }\n",
+    "            // Collect first, then sort. getSupportedModes() returns the panel's\n"
+    "            // OWN enumeration order, which on this device is 60, 120, 90 -- adding\n"
+    "            // entries as they arrive is what produced the unsorted list.\n"
+    "            List<Float> rates = new ArrayList<>();\n"
+    "            for (Display.Mode m : modes) {\n"
+    "                if (m.getPhysicalWidth() == mode.getPhysicalWidth() &&\n"
+    "                        m.getPhysicalHeight() == mode.getPhysicalHeight()) {\n"
+    "                    final float r = m.getRefreshRate();\n"
+    "                    boolean seen = false;\n"
+    "                    for (Float f : rates) {\n"
+    "                        // 1 Hz window: the panel reports 120.00001, and two modes\n"
+    "                        // that format to the same label must not both be listed.\n"
+    "                        if (Math.abs(f - r) < 1f) {\n"
+    "                            seen = true;\n"
+    "                            break;\n"
+    "                        }\n"
+    "                    }\n"
+    "                    if (!seen) {\n"
+    "                        rates.add(r);\n"
+    "                    }\n"
+    "                }\n"
+    "            }\n"
+    "            Collections.sort(rates, Collections.reverseOrder());\n"
+    "            if (!rates.isEmpty()) {\n"
+    "                mPeakRate = rates.get(0);\n"
+    "            }\n"
+    "            // Smart is index 0 and the default.\n"
+    "            mEntries.add(SMART_ENTRY);\n"
+    "            mValues.add(SMART_VALUE);\n"
+    "            for (Float r : rates) {\n"
+    "                mEntries.add(String.format(\"%.02fHz\", r)\n"
+    "                        .replaceAll(\"[\\\\.,]00\", \"\"));\n"
+    "                mValues.add(String.format(Locale.US, \"%.02f\", r));\n"
+    "            }\n",
+    "constructor mode loop")
+
+# 4 -- updateState reads BOTH bounds to decide locked vs Smart.
+s = sub(s,
+    "    public void updateState(Preference preference) {\n"
+    "        final float currentValue = Settings.System.getFloat(mContext.getContentResolver(),\n"
+    "                Settings.System.PEAK_REFRESH_RATE, getDefaultPeakRefreshRate());\n"
+    "        int index = mListPreference.findIndexOfValue(\n"
+    "                String.format(Locale.US, \"%.02f\", currentValue));\n"
+    "        if (index < 0) index = 0;\n"
+    "        mListPreference.setValueIndex(index);\n"
+    "        mListPreference.setSummary(mListPreference.getEntries()[index]);\n"
+    "    }\n",
+    "    public void updateState(Preference preference) {\n"
+    "        // No display, no entries. Upstream indexed into getEntries() regardless\n"
+    "        // and would throw here; guard rather than inherit that.\n"
+    "        final CharSequence[] entries = mListPreference.getEntries();\n"
+    "        if (entries == null || entries.length == 0) {\n"
+    "            return;\n"
+    "        }\n"
+    "        final float peak = Settings.System.getFloat(mContext.getContentResolver(),\n"
+    "                Settings.System.PEAK_REFRESH_RATE, getDefaultPeakRefreshRate());\n"
+    "        final float min = Settings.System.getFloat(mContext.getContentResolver(),\n"
+    "                Settings.System.MIN_REFRESH_RATE, 0f);\n"
+    "        // Locked only when the two bounds AGREE and are real. Everything else --\n"
+    "        // min unset, or the legacy two-control state min 60 / peak 120 -- is\n"
+    "        // Smart, which is also what an upgrading user should land on.\n"
+    "        int index = 0;\n"
+    "        if (min > 0f && Math.abs(min - peak) < 1f) {\n"
+    "            final int found = mListPreference.findIndexOfValue(\n"
+    "                    String.format(Locale.US, \"%.02f\", peak));\n"
+    "            if (found > 0) {\n"
+    "                index = found;\n"
+    "            }\n"
+    "        }\n"
+    "        if (index >= entries.length) {\n"
+    "            index = 0;\n"
+    "        }\n"
+    "        mListPreference.setValueIndex(index);\n"
+    "        mListPreference.setSummary(entries[index]);\n"
+    "    }\n",
+    "updateState")
+
+# 5 -- one control, both bounds.
+s = sub(s,
+    "    public boolean onPreferenceChange(Preference preference, Object newValue) {\n"
+    "        Settings.System.putFloat(mContext.getContentResolver(), Settings.System.PEAK_REFRESH_RATE,\n"
+    "                Float.valueOf((String) newValue));\n"
+    "        updateState(preference);\n"
+    "        return true;\n"
+    "    }\n",
+    "    public boolean onPreferenceChange(Preference preference, Object newValue) {\n"
+    "        final float value = Float.valueOf((String) newValue);\n"
+    "        // Smart leaves the bottom open; anything else pins both bounds so the\n"
+    "        // chosen rate is the rate, not a ceiling the framework sits far below.\n"
+    "        final float min = value <= 0f ? 0f : value;\n"
+    "        final float peak = value <= 0f ? mPeakRate : value;\n"
+    "        Settings.System.putFloat(mContext.getContentResolver(),\n"
+    "                Settings.System.MIN_REFRESH_RATE, min);\n"
+    "        Settings.System.putFloat(mContext.getContentResolver(),\n"
+    "                Settings.System.PEAK_REFRESH_RATE, peak);\n"
+    "        updateState(preference);\n"
+    "        return true;\n"
+    "    }\n",
+    "onPreferenceChange")
+
+open(p, 'w').write(s)
+print("   controller: patched (sort + Smart + both bounds)")
+EOP44
+[ $? -eq 0 ] || { echo "   *** FATAL: refresh-rate controller patch failed"; exit 1; }
+
+# Post-conditions, each with a positive control. The controls are what make the
+# assertions mean something: a truncated or empty file would satisfy every
+# "is gone" check on its own.
+grep -q 'SMART_ENTRY = "Smart"' "$RRC" \
+  || { echo "   *** FATAL: Smart entry missing"; exit 1; }
+grep -q 'Collections.sort(rates, Collections.reverseOrder())' "$RRC" \
+  || { echo "   *** FATAL: the sort is missing"; exit 1; }
+grep -q 'Settings.System.MIN_REFRESH_RATE, min' "$RRC" \
+  || { echo "   *** FATAL: the control does not write MIN_REFRESH_RATE"; exit 1; }
+grep -q 'mEntries.add(String.format("%.02fHz"' "$RRC" \
+  || { echo "   *** FATAL: control failed -- entry formatting gone, file is damaged"; exit 1; }
+if grep -q 'int index = mListPreference.findIndexOfValue(' "$RRC"; then
+  echo "   *** FATAL: the old peak-only index lookup is still present"
+  exit 1
+fi
+echo "   sorted + Smart + both bounds confirmed (control: entry formatting intact)"
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
