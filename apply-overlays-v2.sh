@@ -1480,6 +1480,99 @@ grep -q 'dequeueTag(id, fd,' "$GUIDIR/GedKpiHook.h" \
 echo "   onQueue fence_fd = -1 confirmed (control: onDequeue still passes a fence)"
 
 
+# --- step 42: GameSpace panel crash on a short viewport ----------------------
+#
+# User report, with logcat (paste.crdroid.net/nOaO2h):
+#
+#   java.lang.IllegalArgumentException: Cannot coerce value to an empty range:
+#     maximum -4 is less than minimum 36.
+#       at kotlin.ranges.RangesKt___RangesKt.coerceIn(_Ranges.kt:1617)
+#       at io.chaldeaprjkt.gamespace.widget.PanelView
+#            $applyRelativeLocation$$inlined$doOnLayout$1.onLayoutChange(View.kt:54)
+#
+# PanelView.applyRelativeLocation computes
+#     minY = safeArea.top + 16.dp
+#     maxY = safeArea.top + parent.height - safeArea.bottom - height - 16.dp
+# then calls relativeY.coerceIn(minY, maxY).
+#
+# panel_view.xml is a CardView with layout_height="wrap_content" wrapping a
+# ScrollView, so the panel's measured height is its CONTENT height and is not
+# bounded by the viewport. Games run landscape, where this display is only 720 px
+# tall. Once the panel is taller than 720 minus the insets, maxY falls BELOW minY
+# and kotlin's coerceIn THROWS rather than clamping. The throw happens inside an
+# onLayoutChange callback, so nothing catches it and the process dies.
+#
+# 🔑 The trigger is a RAISED DPI, not landscape by itself. At the stock 273 dpi
+# the panel measures ~544 px and there is ~122 px of slack, so it never fires.
+# Everything scales with density -- both the panel and the 16.dp margin -- so a
+# user who raises DPI in developer options walks the panel into the viewport
+# height. That is why this reproduces for some users and not others.
+#
+# Fix: raise the upper bound to meet the lower one, pinning the panel to the top
+# of the safe area when there is not enough room. The ScrollView already handles
+# content taller than the viewport, so no content is lost. The alternative --
+# bounding the CardView's height -- changes the panel's appearance on every
+# device to fix a crash that only some hit.
+#
+# ✅ REPRODUCED ON HARDWARE 2026-09-02, on the RS4 itself:
+#     wm density 340          (physical is 273)
+#     open any game-listed app in landscape, tap the FPS counter, tap the gear
+#   reporter   Cannot coerce value to an empty range: maximum -4 is less than minimum 36
+#   local      Cannot coerce value to an empty range: maximum  0 is less than minimum 34
+#   both at PanelView$applyRelativeLocation$$inlined$doOnLayout$1.onLayoutChange(View.kt:54)
+#   minimum 34 == 16.dp at 340 dpi (floor(16 * 2.125)) with a 0 px top inset.
+#   Control: the identical sequence at the stock 273 dpi opens the panel fine.
+#   `wm density reset` afterwards -- the override survives reboots.
+#
+# PanelView.kt has ONE commit in its entire history ("New translations"), so this
+# is unmodified upstream code and the bug is upstream, not something this ROM
+# introduced. The fix below stops the crash; the panel is still drawn taller than
+# the viewport at high DPI, which the ScrollView handles by scrolling.
+echo "== step 42: GameSpace PanelView coerceIn crash =="
+PV="$TREE/packages/apps/GameSpace/app/src/main/java/io/chaldeaprjkt/gamespace/widget/PanelView.kt"
+
+if [ ! -f "$PV" ]; then
+  echo "   *** FATAL: PanelView.kt not found at $PV"
+  exit 1
+fi
+
+python3 - "$PV" <<'EOPV'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+
+MARKER = "maxY.coerceAtLeast(minY)"
+ANCHOR = "            y = relativeY.coerceIn(minY, maxY).toFloat()\n"
+FIXED = (
+    "            // maxY < minY whenever the panel is taller than the space between\n"
+    "            // the insets, which happens in landscape because panel_view.xml is a\n"
+    "            // wrap_content CardView around a ScrollView. coerceIn THROWS on an\n"
+    "            // inverted range instead of clamping, and this runs inside\n"
+    "            // onLayoutChange, so it kills the process. Pin to the top instead --\n"
+    "            // the ScrollView already scrolls content taller than the viewport.\n"
+    "            y = relativeY.coerceIn(minY, maxY.coerceAtLeast(minY)).toFloat()\n"
+)
+
+if MARKER in s:
+    print("   PanelView.kt: already patched")
+elif ANCHOR not in s:
+    raise SystemExit("FATAL: anchor not found in PanelView.kt:\n%r" % ANCHOR)
+else:
+    open(p, "w").write(s.replace(ANCHOR, FIXED, 1))
+    print("   PanelView.kt: patched")
+EOPV
+[ $? -eq 0 ] || { echo "   *** FATAL: PanelView patch failed"; exit 1; }
+
+# Post-condition, with a positive control. The control matters: grepping only
+# for the new call would also match a file where the ORIGINAL two-arg coerceIn
+# still sits somewhere else, so assert the unguarded form is gone as well.
+grep -q 'coerceIn(minY, maxY.coerceAtLeast(minY))' "$PV" \
+  || { echo "   *** FATAL: PanelView.kt is not using the clamped upper bound"; exit 1; }
+grep -q 'coerceIn(minY, maxY)\.toFloat()' "$PV" \
+  && { echo "   *** FATAL: the unguarded coerceIn(minY, maxY) is still present"; exit 1; }
+echo "   clamped upper bound confirmed (control: unguarded coerceIn is gone)"
+
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
