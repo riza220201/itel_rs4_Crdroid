@@ -1573,6 +1573,100 @@ grep -q 'coerceIn(minY, maxY)\.toFloat()' "$PV" \
 echo "   clamped upper bound confirmed (control: unguarded coerceIn is gone)"
 
 
+
+# --- step 43: drop Seedvault, crDroid's backup transport ----------------------
+# Operator, 2026-09-02. Same shape as step 31 (drop Eleven) -- one entry out of
+# vendor/lineage/config/common_full.mk, which this device inherits through
+# common_full_phone.mk -- but NOT the same patch, and that difference is the
+# whole reason this step is written out rather than copied.
+#
+# 🪤 STEP 31'S REGEX WOULD HAVE SILENTLY NO-OPPED HERE. It matches
+#     ^[[:space:]]+Eleven[[:space:]]*\\$
+# i.e. an indented name followed by a LINE-CONTINUATION BACKSLASH. In the
+# pristine file Seedvault is the LAST entry of the block and therefore has NO
+# trailing backslash:
+#
+#     PRODUCT_PACKAGES += \
+#         Eleven \
+#         Etar \
+#         Profiles \
+#         Recorder \
+#         Seedvault
+#
+# A copied guard finds nothing, prints "already patched", exits 0, and ships a
+# build that still contains Seedvault. That is the project's recurring failure
+# shape -- a check that cannot fail reads as a pass forever -- so the guard below
+# matches the LAST-ENTRY form, and the removal also strips the now-dangling
+# backslash from the preceding line so the list stays well formed.
+#
+# Both forms are handled: if upstream ever appends an entry after Seedvault it
+# gains a backslash, and the second branch covers that without needing an edit
+# here. Whichever branch runs, the post-condition is the same.
+#
+# ⚠ ORDER-INDEPENDENT WITH STEP 31 BY CONSTRUCTION. Step 31 removes Eleven from
+# the same block. Neither step's guard can match the other's entry, and the
+# backslash repair only ever touches the line immediately above Seedvault, which
+# is Recorder in both the pristine and the Eleven-removed file.
+#
+# NOTHING ELSE NEEDS CHANGING -- surveyed, not assumed. Seedvault ships its own
+# privileged-permission allowlist and default-permissions XMLs
+# (packages/apps/Seedvault/{allowlist,permissions,default-permissions}_*.xml),
+# and they are installed BY the module, so dropping the module drops them too;
+# there is no orphan allowlist to clean up. The only other reference anywhere in
+# vendor/ or device/ is Launcher3's grayscale_icon_map.xml, and an entry there
+# for an uninstalled package is inert -- the same call step 31 made about
+# crDroid's App Lock allow-list, left byte-identical to upstream rather than
+# carrying a needless fork.
+#
+# CONSEQUENCE, stated so it is a decision and not a surprise: Seedvault is a
+# backup TRANSPORT, not just an app. Users who currently have it selected in
+# Settings -> System -> Backup will find backup UNCONFIGURED after this OTA
+# until they pick Google's transport. GApps is baked in, so a working
+# alternative is present on first boot -- but this must be said in the channel
+# post, because it is silent otherwise. A VANILLA=1 build has no such fallback
+# and would ship with no backup transport at all.
+echo "== step 43: drop Seedvault (crDroid backup transport) =="
+FULLMK43="$TREE/vendor/lineage/config/common_full.mk"
+if [ ! -f "$FULLMK43" ]; then
+  echo "   *** FATAL: $FULLMK43 not found"
+  exit 1
+fi
+# Guard matches the real PRODUCT_PACKAGES entry -- an indented "Seedvault" with
+# or without a trailing backslash -- never the bare word, which also appears in
+# this step's own comment block. That distinction is the step-13/step-19
+# own-goal this project has now committed twice.
+if grep -qE '^[[:space:]]+Seedvault[[:space:]]*\\?$' "$FULLMK43"; then
+  python3 - "$FULLMK43" <<'EOP43'
+import sys, re
+p = sys.argv[1]
+s = open(p).read()
+
+# Case 1 -- last entry, no trailing backslash: drop the line AND the dangling
+# backslash the previous line would be left holding.
+s2 = re.sub(r'(?m)[ \t]*\\\n[ \t]+Seedvault[ \t]*\n', '\n', s)
+if s2 == s:
+    # Case 2 -- a later entry exists, so Seedvault carries its own backslash.
+    s2 = re.sub(r'(?m)^[ \t]+Seedvault[ \t]*\\\n', '', s)
+assert s2 != s, "guard matched but neither substitution removed anything"
+open(p, 'w').write(s2)
+EOP43
+  echo "   common_full.mk: Seedvault removed from PRODUCT_PACKAGES"
+else
+  echo "   already patched (no Seedvault entry in common_full.mk)"
+fi
+# Post-condition, with a positive control. The control is what makes the first
+# assertion mean something: an empty or truncated file would also report zero
+# Seedvault entries, so prove the block we edited is still intact and still
+# populated before believing the removal.
+if grep -qE '^[[:space:]]+Seedvault[[:space:]]*\\?$' "$FULLMK43"; then
+  echo "   *** FATAL: Seedvault still present after removal"
+  exit 1
+fi
+grep -qE '^[[:space:]]+Recorder[[:space:]]*\\?$' "$FULLMK43" \
+  || { echo "   *** FATAL: control failed -- Recorder missing, the block is damaged"; exit 1; }
+echo "   Seedvault gone (control: Recorder still listed, block intact)"
+
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
