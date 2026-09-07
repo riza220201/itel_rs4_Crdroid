@@ -2670,6 +2670,507 @@ PYCOMP
   echo "   patched (feature answered, properties answered, control forwarded)"
 fi
 
+# ---------------------------------------------------------------------------
+# STEP 48 -- VK_EXT_swapchain_maintenance1. The last of the four, and the only
+# one that adds an ENTRY POINT.
+#
+# 148/14 -- the donor's numbers, reached. Steps 45-47 got 145/13 to 147/14; this
+# is the last device extension.
+#
+# WHY THIS ONE IS A PATCH FILE AND NOT ANCHORED PYTHON LIKE 45-47
+# It touches SIX files, including two GENERATED ones. A diff fails loudly and
+# completely on any drift; six sets of hand-written anchors fail one at a time
+# and can half-apply. `patch --forward` also makes the idempotency check honest.
+#
+# WHAT IT DOES
+#   swapchain.cpp  the present FENCE: dup the release fd out of
+#                  QueueSignalReleaseImageANDROID and import it into the app's
+#                  VkFence as a TEMPORARY SYNC_FD -- the mechanism all three A16
+#                  donors use (VkImportFenceFdInfoKHR, flags 1, handleType 8,
+#                  read out of their rodata). Plus vkReleaseSwapchainImagesEXT,
+#                  which is ANativeWindow::cancelBuffer via the loader's own
+#                  ReleaseSwapchainImage() -- no new mechanism, one entry point
+#                  onto the existing one.
+#   driver.cpp     advertise (gated on the driver advertising
+#                  VK_KHR_external_fence_fd), report swapchainMaintenance1 TRUE
+#                  unconditionally (what all three donors do), and the two
+#                  exhaustive extension switches.
+#   driver_gen.*   HAND-MAINTAINED ProcHook entry + Extension enum + checked
+#                  wrapper. Our vk.xml predates the extension so the generator
+#                  cannot emit them; scripts/driver_generator.py carries a note
+#                  saying so, because a regeneration silently drops them and
+#                  nothing references the function by name to catch it.
+#
+# 🔴 THE LINE THAT MAKES IT ACTUALLY WORK, and it is not obvious:
+# FilterExtension() enables VK_KHR_external_fence_fd ON THE APP'S BEHALF. The
+# present fence needs the DRIVER's vkImportFenceFdKHR, and a driver only exposes
+# that when external_fence_fd is enabled on the device -- but the app asked for
+# swapchain_maintenance1, not for external_fence_fd. Without that line the
+# extension advertises, the device creates, vkQueuePresentKHR returns
+# VK_SUCCESS, and the fence NEVER SIGNALS. That is not a guess; it is what the
+# first build did, and the log said so:
+#     E vulkan: VK_EXT_swapchain_maintenance1: no vkImportFenceFdKHR, the
+#               present fence cannot be signalled
+#     vkWaitForFences(present fence, 2s) = 2   (VK_TIMEOUT)
+#
+# ⚠ VkSwapchainPresentModeInfoEXT is parsed and deliberately IGNORED. Step 46
+# reports every present mode as compatible only with itself, so there is no
+# legal mode to switch to without recreating the swapchain; honouring it would
+# claim a capability the compatibility query denies. All three donors parse it
+# the same way.
+#
+# PROVEN ON HARDWARE 2026-09-08, with a negative control:
+#   patched    device_ext_count 148, instance 14
+#              swapchainMaintenance1 1
+#              vkGetDeviceProcAddr(vkReleaseSwapchainImagesEXT) non-null
+#              vkReleaseSwapchainImagesEXT(acquired image) 0
+#              present fence: unsignalled -> vkQueuePresentKHR 0 ->
+#                vkWaitForFences 0 (VK_SUCCESS) -> signalled
+#   unpatched  145/13 - vkCreateDevice(+ext) -7 - and the feature sentinel
+#              0xEE survives UNTOUCHED, so the stock loader demonstrably does
+#              not answer it (unlike step 47's, which the driver answers)
+# Test binary: device_itel_S666LN/tools/vksm1.c
+echo "== step 48: libvulkan VK_EXT_swapchain_maintenance1 =="
+VKDIR="$TREE/frameworks/native/vulkan"
+if [ ! -d "$VKDIR/libvulkan" ]; then
+  echo "   *** FATAL: $VKDIR/libvulkan not found"; exit 1
+elif grep -q 'EXT_swapchain_maintenance1' "$VKDIR/libvulkan/driver_gen.h" 2>/dev/null; then
+  echo "   already patched"
+else
+  cat > "$TREE/.rs48.patch" <<'RS48_PATCH'
+--- a/frameworks/native/vulkan/libvulkan/ext_backport.h
++++ b/frameworks/native/vulkan/libvulkan/ext_backport.h
+@@ -116,4 +116,46 @@
+     VkImageCompressionFixedRateFlagsEXT imageCompressionFixedRateFlags;
+ };
+ 
++// ---- VK_EXT_swapchain_maintenance1 (device extension, ONE entry point)
++//
++// The only one of the four that adds a function, which is why it is last: the
++// ProcHook table in driver_gen.{h,cpp} is GENERATED, and our vk.xml predates
++// this extension, so those two entries are hand-maintained. See the note in
++// scripts/driver_generator.py.
++#define RS4_VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_swapchain_maintenance1"
++#define RS4_VK_EXT_SWAPCHAIN_MAINTENANCE_1_SPEC_VERSION 1
++
++constexpr uint32_t kStructureTypePhysicalDeviceSwapchainMaintenance1FeaturesEXT = 1000275000u;
++constexpr uint32_t kStructureTypeSwapchainPresentFenceInfoEXT = 1000275001u;
++constexpr uint32_t kStructureTypeSwapchainPresentModeInfoEXT = 1000275003u;
++constexpr uint32_t kStructureTypeReleaseSwapchainImagesInfoEXT = 1000275005u;
++
++struct VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT {
++    VkStructureType sType;
++    void* pNext;
++    VkBool32 swapchainMaintenance1;
++};
++
++struct VkSwapchainPresentFenceInfoEXT {
++    VkStructureType sType;
++    const void* pNext;
++    uint32_t swapchainCount;
++    const VkFence* pFences;
++};
++
++struct VkSwapchainPresentModeInfoEXT {
++    VkStructureType sType;
++    const void* pNext;
++    uint32_t swapchainCount;
++    const VkPresentModeKHR* pPresentModes;
++};
++
++struct VkReleaseSwapchainImagesInfoEXT {
++    VkStructureType sType;
++    const void* pNext;
++    VkSwapchainKHR swapchain;
++    uint32_t imageIndexCount;
++    const uint32_t* pImageIndices;
++};
++
+ #endif  // VULKAN_LIBVULKAN_EXT_BACKPORT_H
+--- a/frameworks/native/vulkan/libvulkan/swapchain.h
++++ b/frameworks/native/vulkan/libvulkan/swapchain.h
+@@ -18,6 +18,7 @@
+ #define LIBVULKAN_SWAPCHAIN_H 1
+ 
+ #include <vulkan/vulkan.h>
++#include "ext_backport.h"
+ 
+ namespace vulkan {
+ namespace driver {
+@@ -46,6 +47,7 @@
+ VKAPI_ATTR VkResult GetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR* pSurfaceInfo, uint32_t* pSurfaceFormatCount, VkSurfaceFormat2KHR* pSurfaceFormats);
+ VKAPI_ATTR VkResult BindImageMemory2(VkDevice device, uint32_t bindInfoCount, const VkBindImageMemoryInfo* pBindInfos);
+ VKAPI_ATTR VkResult BindImageMemory2KHR(VkDevice device, uint32_t bindInfoCount, const VkBindImageMemoryInfo* pBindInfos);
++VKAPI_ATTR VkResult ReleaseSwapchainImagesEXT(VkDevice device, const VkReleaseSwapchainImagesInfoEXT* pReleaseInfo);
+ // clang-format on
+ 
+ }  // namespace driver
+--- a/frameworks/native/vulkan/libvulkan/swapchain.cpp
++++ b/frameworks/native/vulkan/libvulkan/swapchain.cpp
+@@ -1938,6 +1938,57 @@
+ }
+ 
+ VKAPI_ATTR
++// VK_EXT_swapchain_maintenance1: give acquired-but-not-presented images back
++// to the swapchain without presenting them.
++//
++// On Android that is exactly ANativeWindow::cancelBuffer, which the loader
++// already does in ReleaseSwapchainImage() -- the same call the error paths of
++// CreateSwapchainKHR and AcquireNextImage use. This adds no new mechanism, only
++// an entry point onto the existing one.
++//
++// The spec requires every listed index to be an ACQUIRED image
++// (VUID-VkReleaseSwapchainImagesInfoEXT-pImageIndices-07785). We check rather
++// than trust: releasing an image that was never dequeued would cancel a buffer
++// the compositor owns.
++VKAPI_ATTR VkResult ReleaseSwapchainImagesEXT(
++    VkDevice device,
++    const VkReleaseSwapchainImagesInfoEXT* pReleaseInfo) {
++    ATRACE_CALL();
++
++    if (pReleaseInfo == nullptr ||
++        pReleaseInfo->swapchain == VK_NULL_HANDLE)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    Swapchain& swapchain = *SwapchainFromHandle(pReleaseInfo->swapchain);
++    ANativeWindow* window =
++        swapchain.surface.swapchain_handle == pReleaseInfo->swapchain
++            ? swapchain.surface.window.get()
++            : nullptr;
++
++    for (uint32_t i = 0; i < pReleaseInfo->imageIndexCount; i++) {
++        const uint32_t index = pReleaseInfo->pImageIndices[i];
++        if (index >= swapchain.num_images) {
++            ALOGE("vkReleaseSwapchainImagesEXT: image index %u out of range",
++                  index);
++            return VK_ERROR_INITIALIZATION_FAILED;
++        }
++        if (!swapchain.images[index].dequeued) {
++            ALOGE(
++                "vkReleaseSwapchainImagesEXT: image %u is not acquired, "
++                "refusing to cancel a buffer we do not hold",
++                index);
++            return VK_ERROR_INITIALIZATION_FAILED;
++        }
++    }
++
++    for (uint32_t i = 0; i < pReleaseInfo->imageIndexCount; i++) {
++        ReleaseSwapchainImage(device, swapchain.shared, window, -1,
++                              swapchain.images[pReleaseInfo->pImageIndices[i]],
++                              false);
++    }
++    return VK_SUCCESS;
++}
++
+ VkResult QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* present_info) {
+     ATRACE_CALL();
+ 
+@@ -1952,6 +2003,8 @@
+     // Look at the pNext chain for supported extension structs:
+     const VkPresentRegionsKHR* present_regions = nullptr;
+     const VkPresentTimesInfoGOOGLE* present_times = nullptr;
++    // VK_EXT_swapchain_maintenance1
++    const VkSwapchainPresentFenceInfoEXT* present_fences = nullptr;
+     const VkPresentRegionsKHR* next =
+         reinterpret_cast<const VkPresentRegionsKHR*>(present_info->pNext);
+     while (next) {
+@@ -1964,6 +2017,26 @@
+                     reinterpret_cast<const VkPresentTimesInfoGOOGLE*>(next);
+                 break;
+             default:
++                // VK_EXT_swapchain_maintenance1. Handled here rather than as a
++                // case label because this tree's VkStructureType does not
++                // contain these values.
++                if (static_cast<uint32_t>(next->sType) ==
++                    kStructureTypeSwapchainPresentFenceInfoEXT) {
++                    present_fences =
++                        reinterpret_cast<const VkSwapchainPresentFenceInfoEXT*>(
++                            next);
++                    break;
++                }
++                if (static_cast<uint32_t>(next->sType) ==
++                    kStructureTypeSwapchainPresentModeInfoEXT) {
++                    // Accepted and ignored, deliberately. Step 46 reports every
++                    // present mode as compatible only with itself, so there is
++                    // never a legal mode to switch TO without recreating the
++                    // swapchain, and honouring this struct would mean claiming
++                    // a capability the compatibility query denies. All three A16
++                    // donors parse it out of the chain the same way.
++                    break;
++                }
+                 ALOGV("QueuePresentKHR ignoring unrecognized pNext->sType = %x",
+                       next->sType);
+                 break;
+@@ -2010,6 +2083,40 @@
+             close(img.release_fence);
+         img.release_fence = fence < 0 ? -1 : dup(fence);
+ 
++        // VK_EXT_swapchain_maintenance1: hand the app a fence that signals when
++        // this presented image is released. The mechanism is not invented --
++        // all three A16 donors do exactly this: dup the release fd out of
++        // QueueSignalReleaseImageANDROID and import it into the app's VkFence
++        // as a TEMPORARY SYNC_FD. On success the driver owns the fd; on failure
++        // we still own it and must close it.
++        if (present_fences != nullptr && sc < present_fences->swapchainCount &&
++            present_fences->pFences[sc] != VK_NULL_HANDLE) {
++            PFN_vkImportFenceFdKHR import_fence_fd =
++                reinterpret_cast<PFN_vkImportFenceFdKHR>(
++                    GetData(device).driver.GetDeviceProcAddr(
++                        device, "vkImportFenceFdKHR"));
++            if (import_fence_fd != nullptr) {
++                int import_fd = (fence >= 0) ? dup(fence) : -1;
++                VkImportFenceFdInfoKHR import_info = {};
++                import_info.sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR;
++                import_info.pNext = nullptr;
++                import_info.fence = present_fences->pFences[sc];
++                import_info.flags = VK_FENCE_IMPORT_TEMPORARY_BIT;
++                import_info.handleType =
++                    VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
++                import_info.fd = import_fd;
++                if (import_fence_fd(device, &import_info) != VK_SUCCESS) {
++                    ALOGE("vkImportFenceFdKHR for the present fence failed");
++                    if (import_fd >= 0)
++                        close(import_fd);
++                }
++            } else {
++                ALOGE(
++                    "VK_EXT_swapchain_maintenance1: no vkImportFenceFdKHR, the "
++                    "present fence cannot be signalled");
++            }
++        }
++
+         if (swapchain.surface.swapchain_handle ==
+             present_info->pSwapchains[sc]) {
+             ANativeWindow* window = swapchain.surface.window.get();
+--- a/frameworks/native/vulkan/libvulkan/driver.cpp
++++ b/frameworks/native/vulkan/libvulkan/driver.cpp
+@@ -657,6 +657,7 @@
+             case ProcHook::KHR_incremental_present:
+             case ProcHook::KHR_shared_presentable_image:
+             case ProcHook::KHR_swapchain:
++            case ProcHook::EXT_swapchain_maintenance1:
+             case ProcHook::EXT_hdr_metadata:
+             case ProcHook::ANDROID_external_memory_android_hardware_buffer:
+             case ProcHook::ANDROID_native_buffer:
+@@ -693,8 +694,32 @@
+             case ProcHook::KHR_incremental_present:
+             case ProcHook::GOOGLE_display_timing:
+             case ProcHook::KHR_shared_presentable_image:
++            // VK_EXT_swapchain_maintenance1 is implemented entirely in the
++            // loader (the present fence and vkReleaseSwapchainImagesEXT), so
++            // like the three above it must NOT be forwarded to a driver that
++            // has never heard of it.
++            case ProcHook::EXT_swapchain_maintenance1:
++                // 🔴 It needs no HAL support of its OWN, but its present fence
++                // is delivered by importing the ANativeWindow release fd into
++                // the app's VkFence -- so the DRIVER must expose
++                // vkImportFenceFdKHR, and a driver only exposes that if
++                // VK_KHR_external_fence_fd was ENABLED on the device. The app
++                // asked for swapchain_maintenance1, not for external_fence_fd,
++                // so the loader enables it on the app's behalf.
++                //
++                // Without this the extension advertises, the device creates,
++                // vkQueuePresentKHR returns VK_SUCCESS -- and the fence is
++                // never signalled. Measured exactly that way before this line
++                // existed: "no vkImportFenceFdKHR, the present fence cannot be
++                // signalled", vkWaitForFences -> VK_TIMEOUT.
++                //
++                // The recursive call is safe: external_fence_fd maps to
++                // EXTENSION_UNKNOWN, which breaks out to the append loop below
++                // and does not re-enter this switch. The loop's own duplicate
++                // check handles an app that asked for both.
++                FilterExtension(VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME);
+                 hook_extensions_.set(ext_bit);
+-                // return now as these extensions do not require HAL support
++                // return now as this extension itself requires no HAL support
+                 return;
+             case ProcHook::EXT_hdr_metadata:
+             case ProcHook::KHR_bind_memory2:
+@@ -1074,6 +1099,35 @@
+     return icc.imageCompressionControl == VK_TRUE;
+ }
+ 
++// VK_EXT_swapchain_maintenance1's present fence is delivered by importing the
++// ANativeWindow release fd into the app's VkFence, so the whole extension rests
++// on the driver having vkImportFenceFdKHR. Gate on the driver actually
++// advertising VK_KHR_external_fence_fd rather than assuming: advertising an
++// extension whose one real mechanism is missing is the trap this whole series
++// has been avoiding. Mali r54p1 here does advertise it.
++static bool DriverSupportsExternalFenceFd(VkPhysicalDevice physicalDevice) {
++    const InstanceData& data = GetData(physicalDevice);
++    if (!data.driver.EnumerateDeviceExtensionProperties)
++        return false;
++
++    uint32_t count = 0;
++    if (data.driver.EnumerateDeviceExtensionProperties(
++            physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS ||
++        count == 0)
++        return false;
++
++    std::vector<VkExtensionProperties> props(count);
++    if (data.driver.EnumerateDeviceExtensionProperties(
++            physicalDevice, nullptr, &count, props.data()) != VK_SUCCESS)
++        return false;
++
++    for (const auto& p : props) {
++        if (strcmp(p.extensionName, VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME) == 0)
++            return true;
++    }
++    return false;
++}
++
+ VkResult EnumerateDeviceExtensionProperties(
+     VkPhysicalDevice physicalDevice,
+     const char* pLayerName,
+@@ -1119,6 +1173,14 @@
+              RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_SPEC_VERSION});
+     }
+ 
++    // VK_EXT_swapchain_maintenance1 -- implemented by the loader
++    // (swapchain.cpp: the present fence and vkReleaseSwapchainImagesEXT).
++    if (DriverSupportsExternalFenceFd(physicalDevice)) {
++        loader_extensions.push_back(
++            {RS4_VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
++             RS4_VK_EXT_SWAPCHAIN_MAINTENANCE_1_SPEC_VERSION});
++    }
++
+     VkPhysicalDevicePresentationPropertiesANDROID presentation_properties;
+     QueryPresentationProperties(physicalDevice, &presentation_properties);
+     if (presentation_properties.sharedImage) {
+@@ -1539,6 +1601,21 @@
+             p)->imageCompressionControlSwapchain =
+             icc_supported ? VK_TRUE : VK_FALSE;
+     }
++
++    // VK_EXT_swapchain_maintenance1 -- unconditionally TRUE, which is what all
++    // three A16 donors do (a bare `str w13, [x14,#16]` with w13 = 1, no query).
++    // The loader implements the whole extension, so there is nothing to ask the
++    // driver about; whether it is USABLE is decided when the extension is
++    // advertised, above.
++    for (VkBaseOutStructure* p =
++             reinterpret_cast<VkBaseOutStructure*>(pFeatures->pNext);
++         p != nullptr; p = p->pNext) {
++        if (static_cast<uint32_t>(p->sType) ==
++            kStructureTypePhysicalDeviceSwapchainMaintenance1FeaturesEXT) {
++            reinterpret_cast<VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*>(
++                p)->swapchainMaintenance1 = VK_TRUE;
++        }
++    }
+ }
+ 
+ void GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
+--- a/frameworks/native/vulkan/libvulkan/driver_gen.h
++++ b/frameworks/native/vulkan/libvulkan/driver_gen.h
+@@ -49,6 +49,8 @@
+         KHR_surface,
+         KHR_surface_protected_capabilities,
+         KHR_swapchain,
++        // HAND-ADDED (not generated): see scripts/driver_generator.py.
++        EXT_swapchain_maintenance1,
+         ANDROID_external_memory_android_hardware_buffer,
+         KHR_bind_memory2,
+         KHR_get_physical_device_properties2,
+--- a/frameworks/native/vulkan/libvulkan/driver_gen.cpp
++++ b/frameworks/native/vulkan/libvulkan/driver_gen.cpp
+@@ -22,6 +22,7 @@
+ #include <algorithm>
+ 
+ #include "driver.h"
++#include "ext_backport.h"
+ 
+ namespace vulkan {
+ namespace driver {
+@@ -65,6 +66,18 @@
+     }
+ }
+ 
++// HAND-ADDED (not generated): VK_EXT_swapchain_maintenance1. Our vk.xml
++// predates the extension, so the generator cannot emit this. See
++// scripts/driver_generator.py.
++VKAPI_ATTR VkResult checkedReleaseSwapchainImagesEXT(VkDevice device, const VkReleaseSwapchainImagesInfoEXT* pReleaseInfo) {
++    if (GetData(device).hook_extensions[ProcHook::EXT_swapchain_maintenance1]) {
++        return ReleaseSwapchainImagesEXT(device, pReleaseInfo);
++    } else {
++        Logger(device).Err(device, "VK_EXT_swapchain_maintenance1 not enabled. vkReleaseSwapchainImagesEXT not executed.");
++        return VK_SUCCESS;
++    }
++}
++
+ VKAPI_ATTR VkResult checkedQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+     if (GetData(queue).hook_extensions[ProcHook::KHR_swapchain]) {
+         return QueuePresentKHR(queue, pPresentInfo);
+@@ -538,6 +551,13 @@
+         nullptr,
+     },
+     {
++        "vkReleaseSwapchainImagesEXT",
++        ProcHook::DEVICE,
++        ProcHook::EXT_swapchain_maintenance1,
++        reinterpret_cast<PFN_vkVoidFunction>(ReleaseSwapchainImagesEXT),
++        reinterpret_cast<PFN_vkVoidFunction>(checkedReleaseSwapchainImagesEXT),
++    },
++    {
+         "vkSetHdrMetadataEXT",
+         ProcHook::DEVICE,
+         ProcHook::EXT_hdr_metadata,
+@@ -573,6 +593,7 @@
+     if (strcmp(name, "VK_KHR_surface") == 0) return ProcHook::KHR_surface;
+     if (strcmp(name, "VK_KHR_surface_protected_capabilities") == 0) return ProcHook::KHR_surface_protected_capabilities;
+     if (strcmp(name, "VK_KHR_swapchain") == 0) return ProcHook::KHR_swapchain;
++    if (strcmp(name, "VK_EXT_swapchain_maintenance1") == 0) return ProcHook::EXT_swapchain_maintenance1;  // HAND-ADDED
+     if (strcmp(name, "VK_ANDROID_external_memory_android_hardware_buffer") == 0) return ProcHook::ANDROID_external_memory_android_hardware_buffer;
+     if (strcmp(name, "VK_KHR_bind_memory2") == 0) return ProcHook::KHR_bind_memory2;
+     if (strcmp(name, "VK_KHR_get_physical_device_properties2") == 0) return ProcHook::KHR_get_physical_device_properties2;
+--- a/frameworks/native/vulkan/scripts/driver_generator.py
++++ b/frameworks/native/vulkan/scripts/driver_generator.py
+@@ -35,6 +35,16 @@
+     'VK_KHR_surface',
+     'VK_KHR_surface_protected_capabilities',
+     'VK_KHR_swapchain',
++    # 🔴 VK_EXT_swapchain_maintenance1 is NOT in this list and cannot be: the
++    # vk.xml this generator reads predates it, so there is no signature for
++    # vkReleaseSwapchainImagesEXT to emit. Its ProcHook entry, its Extension
++    # enum value and its checked wrapper are HAND-MAINTAINED in driver_gen.h and
++    # driver_gen.cpp, marked HAND-ADDED at each site.
++    #
++    # If you regenerate these files, those three edits are lost and
++    # vkGetDeviceProcAddr stops returning vkReleaseSwapchainImagesEXT -- with no
++    # build error, because nothing references it by name. Re-apply them, or bump
++    # the registry first and add the extension here properly.
+ ]
+ 
+ # Extensions known to vulkan::driver level.
+RS48_PATCH
+  ( cd "$TREE" && patch -p1 --forward --no-backup-if-mismatch < .rs48.patch > /dev/null )
+  rc=$?
+  rm -f "$TREE/.rs48.patch"
+  [ $rc -eq 0 ] || { echo "   *** FATAL: swapchain_maintenance1 patch did not apply"; exit 1; }
+  grep -q 'EXT_swapchain_maintenance1' "$VKDIR/libvulkan/driver_gen.h" \
+    || { echo "   *** FATAL: the ProcHook enum value never landed"; exit 1; }
+  grep -q 'vkReleaseSwapchainImagesEXT' "$VKDIR/libvulkan/driver_gen.cpp" \
+    || { echo "   *** FATAL: the entry point is not in the hook table, so"; \
+         echo "             vkGetDeviceProcAddr will never return it"; exit 1; }
+  grep -q 'VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME' "$VKDIR/libvulkan/driver.cpp" \
+    || { echo "   *** FATAL: external_fence_fd is not enabled for the driver --"; \
+         echo "             the present fence would never signal"; exit 1; }
+  # The hook table is binary-searched with std::lower_bound. An out-of-order
+  # entry is not a build error and not a crash -- vkGetDeviceProcAddr just
+  # returns null for a name that is right there. It happened once.
+  python3 - "$VKDIR/libvulkan/driver_gen.cpp" <<'RS48_SORT'
+import re, sys
+c = open(sys.argv[1]).read()
+i = c.index('g_proc_hooks[] = {'); j = c.index('\n};', i)
+names = re.findall(r'^\s+"(vk[A-Za-z0-9]+)",$', c[i:j], re.M)
+bad = [(a, b) for a, b in zip(names, names[1:]) if a >= b]
+if bad:
+    sys.exit('g_proc_hooks is NOT sorted: %s' % bad[:3])
+if 'vkReleaseSwapchainImagesEXT' not in names:
+    sys.exit('vkReleaseSwapchainImagesEXT missing from g_proc_hooks')
+RS48_SORT
+  [ $? -eq 0 ] || { echo "   *** FATAL: hook table order/content control failed"; exit 1; }
+  echo "   patched (present fence, release entry point, hook table sorted)"
+fi
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
