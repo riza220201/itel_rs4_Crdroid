@@ -1899,7 +1899,7 @@ fi
 echo "   sorted + Smart + both bounds confirmed (control: entry formatting intact)"
 
 # ---------------------------------------------------------------------------
-# STEP 41 -- VK_KHR_swapchain_mutable_format, implemented in the loader.
+# STEP 45 -- VK_KHR_swapchain_mutable_format, implemented in the loader.
 #
 # WHY: our Mali r54p1 blob is byte-identical (Build ID 5f2913fd…) to the Samsung
 # SM-A175F donor's, plus one DT_NEEDED for our shim. That phone reports 148
@@ -1926,7 +1926,7 @@ echo "   sorted + Smart + both bounds confirmed (control: entry formatting intac
 #              VK_ERROR_EXTENSION_NOT_PRESENT
 #   0 new tombstones, SurfaceFlinger up on r54p1, 0 restarting services.
 # Test binaries: device_itel_S666LN/tools/vkenum.c and tools/vkmut.c.
-echo "== step 41: libvulkan VK_KHR_swapchain_mutable_format =="
+echo "== step 45: libvulkan VK_KHR_swapchain_mutable_format =="
 SWAPCPP="$TREE/frameworks/native/vulkan/libvulkan/swapchain.cpp"
 DRVCPP="$TREE/frameworks/native/vulkan/libvulkan/driver.cpp"
 if [ ! -f "$SWAPCPP" ] || [ ! -f "$DRVCPP" ]; then
@@ -2039,7 +2039,7 @@ PYMUT
 fi
 
 # ---------------------------------------------------------------------------
-# STEP 42 -- VK_EXT_surface_maintenance1, implemented in the loader.
+# STEP 46 -- VK_EXT_surface_maintenance1, implemented in the loader.
 #
 # Second of the four extensions that separate us from the donor's 148/14. This
 # one is INSTANCE-level and moves 13 -> 14. Like step 41 it adds no entry points
@@ -2075,7 +2075,7 @@ fi
 #              FIFO compatible with itself only, count 1
 #   unpatched  instance_ext_count 13 · vkCreateInstance(+ext) -7
 # Test binary: device_itel_S666LN/tools/vksurf.c
-echo "== step 42: libvulkan VK_EXT_surface_maintenance1 =="
+echo "== step 46: libvulkan VK_EXT_surface_maintenance1 =="
 VKDIR="$TREE/frameworks/native/vulkan/libvulkan"
 if [ ! -d "$VKDIR" ]; then
   echo "   *** FATAL: $VKDIR not found"; exit 1
@@ -2287,7 +2287,7 @@ PYSURF
 fi
 
 # ---------------------------------------------------------------------------
-# STEP 43 -- VK_EXT_image_compression_control_swapchain, in all three of its parts.
+# STEP 47 -- VK_EXT_image_compression_control_swapchain, in all three of its parts.
 #
 # Third of four. Device extension, 146 -> 147, no entry points. The BASE
 # extension VK_EXT_image_compression_control belongs to the DRIVER (Mali r54p1
@@ -2332,7 +2332,7 @@ fi
 #   unpatched  device_ext_count 145 - vkCreateDevice(+both) -7
 #              properties NOT answered (sentinel intact)
 # Test binary: device_itel_S666LN/tools/vkcomp.c
-echo "== step 43: libvulkan VK_EXT_image_compression_control_swapchain =="
+echo "== step 47: libvulkan VK_EXT_image_compression_control_swapchain =="
 VKDIR="$TREE/frameworks/native/vulkan/libvulkan"
 if [ ! -d "$VKDIR" ]; then
   echo "   *** FATAL: $VKDIR not found"; exit 1
@@ -2595,7 +2595,7 @@ a = ('        mutable_format_image_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |\
      '                                     VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;\n'
      '    }\n')
 if s.count(a) != 1:
-    sys.exit('swapchain.cpp anchor A count %d (step 41 must run first)' % s.count(a))
+    sys.exit('swapchain.cpp anchor A count %d (step 45 must run first)' % s.count(a))
 s = s.replace(a, a + part('swap_a'), 1)
 
 b = ('    if (swapchain_image_format_list != nullptr)\n'
