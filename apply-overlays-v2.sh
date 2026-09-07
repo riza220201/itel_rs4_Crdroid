@@ -1898,6 +1898,146 @@ if grep -q 'int index = mListPreference.findIndexOfValue(' "$RRC"; then
 fi
 echo "   sorted + Smart + both bounds confirmed (control: entry formatting intact)"
 
+# ---------------------------------------------------------------------------
+# STEP 41 -- VK_KHR_swapchain_mutable_format, implemented in the loader.
+#
+# WHY: our Mali r54p1 blob is byte-identical (Build ID 5f2913fd…) to the Samsung
+# SM-A175F donor's, plus one DT_NEEDED for our shim. That phone reports 148
+# device extensions; we reported 145. The whole difference is the PLATFORM
+# Vulkan loader -- AOSP frameworks/native/vulkan, code we build -- and three of
+# the four missing extensions are ones the loader implements itself. This is the
+# first of them, and the only one our vulkan-headers (VK_HEADER_VERSION 203)
+# already define, so it needs no header work.
+#
+# WHAT: the extension adds NO entry points and NO driver interface. Its entire
+# content is that when an app sets VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR,
+# each swapchain image must be created as if with VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
+# and VK_IMAGE_CREATE_EXTENDED_USAGE_BIT, and the VkImageFormatListCreateInfo the
+# app chained onto the swapchain must reach vkCreateImage. That is why the string
+# appears in NO driver's export table -- the same reason VK_KHR_swapchain itself
+# does not.
+#
+# PROVEN ON HARDWARE 2026-09-07, with a negative control:
+#   patched    device_ext_count 146, VK_KHR_swapchain_mutable_format present
+#              vkCreateDevice(+ext) 0 · vkCreateSwapchainKHR(MUTABLE_FORMAT +
+#              format list) 0 · 7 images · vkCreateImageView(SRGB view on a
+#              UNORM swapchain image) 0   <- only legal WITH the bit
+#   unpatched  device_ext_count 145 · vkCreateDevice(+ext) -7
+#              VK_ERROR_EXTENSION_NOT_PRESENT
+#   0 new tombstones, SurfaceFlinger up on r54p1, 0 restarting services.
+# Test binaries: device_itel_S666LN/tools/vkenum.c and tools/vkmut.c.
+echo "== step 41: libvulkan VK_KHR_swapchain_mutable_format =="
+SWAPCPP="$TREE/frameworks/native/vulkan/libvulkan/swapchain.cpp"
+DRVCPP="$TREE/frameworks/native/vulkan/libvulkan/driver.cpp"
+if [ ! -f "$SWAPCPP" ] || [ ! -f "$DRVCPP" ]; then
+  echo "   *** FATAL: vulkan/libvulkan sources not found"; exit 1
+elif grep -q 'mutable_format_image_flags' "$SWAPCPP"; then
+  echo "   already patched"
+else
+  python3 - "$SWAPCPP" "$DRVCPP" <<'PYMUT'
+import sys
+sc_path, dr_path = sys.argv[1], sys.argv[2]
+s = open(sc_path).read()
+
+a = """    bool createProtectedSwapchain = false;
+    if (create_info->flags & VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) {
+        createProtectedSwapchain = true;
+        native_usage |= BufferUsage::PROTECTED;
+    }
+"""
+a_new = a + """
+    // VK_KHR_swapchain_mutable_format. Implemented entirely here: the extension
+    // adds no entry points and no driver interface. The spec makes the format
+    // list mandatory when the bit is set (VUID-VkSwapchainCreateInfoKHR-flags-03168),
+    // so refuse rather than hand back images the app cannot legally use.
+    VkImageCreateFlags mutable_format_image_flags = 0;
+    const VkImageFormatListCreateInfo* swapchain_image_format_list = nullptr;
+    if (create_info->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
+        for (const VkBaseInStructure* p =
+                 reinterpret_cast<const VkBaseInStructure*>(create_info->pNext);
+             p != nullptr; p = p->pNext) {
+            if (p->sType == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO) {
+                swapchain_image_format_list =
+                    reinterpret_cast<const VkImageFormatListCreateInfo*>(p);
+                break;
+            }
+        }
+        if (swapchain_image_format_list == nullptr ||
+            swapchain_image_format_list->viewFormatCount == 0) {
+            ALOGE(
+                "vkCreateSwapchainKHR: MUTABLE_FORMAT_BIT set without a "
+                "non-empty VkImageFormatListCreateInfo");
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        mutable_format_image_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
+                                     VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+    }
+"""
+
+b = """    native_buffer.nb.pNext = &swapchain_image_create;
+    VkNativeBufferANDROID& image_native_buffer = native_buffer.nb;"""
+b_new = """    native_buffer.nb.pNext = &swapchain_image_create;
+    // Appended at the TAIL so the VkNativeBufferANDROID -> swapchain_image_create
+    // order the driver walks is untouched. pNext order carries no meaning.
+    if (swapchain_image_format_list != nullptr)
+        swapchain_image_create.pNext = swapchain_image_format_list;
+    VkNativeBufferANDROID& image_native_buffer = native_buffer.nb;"""
+
+c = "        .flags = createProtectedSwapchain ? VK_IMAGE_CREATE_PROTECTED_BIT : 0u,"
+c_new = ("        .flags = (createProtectedSwapchain ? VK_IMAGE_CREATE_PROTECTED_BIT : 0u) |\n"
+         "                 mutable_format_image_flags,")
+
+for anchor in (a, b, c):
+    if s.count(anchor) != 1:
+        sys.exit("swapchain.cpp anchor count %d, expected 1" % s.count(anchor))
+s = s.replace(a, a_new, 1).replace(b, b_new, 1).replace(c, c_new, 1)
+open(sc_path, "w").write(s)
+
+d = open(dr_path).read()
+e = """    bool hdrBoardConfig = android::sysprop::has_HDR_display(false);
+    if (hdrBoardConfig) {
+        loader_extensions.push_back({VK_EXT_HDR_METADATA_EXTENSION_NAME,
+                                     VK_EXT_HDR_METADATA_SPEC_VERSION});
+    }
+"""
+e_new = e + """
+    // VK_KHR_swapchain_mutable_format is implemented by the LOADER (swapchain.cpp),
+    // not the driver -- exactly as VK_KHR_swapchain itself is, which is why
+    // neither string appears in the driver's own extension table.
+    //
+    // Gated on the driver being >= 1.2, where both things the implementation
+    // needs are CORE: VkImageFormatListCreateInfo (VK_KHR_image_format_list) and
+    // VK_IMAGE_CREATE_EXTENDED_USAGE_BIT (VK_KHR_maintenance2). Advertising it
+    // against a driver with neither would hand the app a swapchain whose images
+    // vkCreateImage rejects. Mali r54p1 here reports 1.3.303 and exports both.
+    {
+        VkPhysicalDeviceProperties props;
+        data.driver.GetPhysicalDeviceProperties(physicalDevice, &props);
+        if (props.apiVersion >= VK_API_VERSION_1_2) {
+            loader_extensions.push_back(
+                {VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,
+                 VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_SPEC_VERSION});
+        }
+    }
+"""
+if d.count(e) != 1:
+    sys.exit("driver.cpp anchor count %d, expected 1" % d.count(e))
+open(dr_path, "w").write(d.replace(e, e_new, 1))
+PYMUT
+  [ $? -eq 0 ] || { echo "   *** FATAL: swapchain_mutable_format patch failed"; exit 1; }
+  grep -q 'mutable_format_image_flags' "$SWAPCPP" \
+    || { echo "   *** FATAL: image flags never set"; exit 1; }
+  grep -q 'swapchain_image_create.pNext = swapchain_image_format_list' "$SWAPCPP" \
+    || { echo "   *** FATAL: the format list never reaches vkCreateImage -- the"; \
+         echo "             extension would be advertised and inert"; exit 1; }
+  grep -q 'VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME' "$DRVCPP" \
+    || { echo "   *** FATAL: never advertised"; exit 1; }
+  grep -q 'VK_IMAGE_CREATE_PROTECTED_BIT : 0u) |' "$SWAPCPP" \
+    || { echo "   *** FATAL: control -- the protected-bit flag expression was not"; \
+         echo "             rewritten, so the mutable flags are computed and dropped"; exit 1; }
+  echo "   patched (advertised in driver.cpp, implemented in swapchain.cpp)"
+fi
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
