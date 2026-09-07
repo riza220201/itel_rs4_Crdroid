@@ -2286,6 +2286,390 @@ PYSURF
   echo "   patched (instance extension advertised, capabilities answered)"
 fi
 
+# ---------------------------------------------------------------------------
+# STEP 43 -- VK_EXT_image_compression_control_swapchain, in all three of its parts.
+#
+# Third of four. Device extension, 146 -> 147, no entry points. The BASE
+# extension VK_EXT_image_compression_control belongs to the DRIVER (Mali r54p1
+# exports and implements it); this one extends it to swapchains, which is the
+# loader's job because the loader is what creates swapchain images.
+#
+# 🔴 IT HAS THREE PARTS AND SHIPPING TWO WOULD BE WORSE THAN SHIPPING NONE:
+#   1 the FEATURE must report TRUE, because an app checks it before using this
+#   2 vkGetPhysicalDeviceSurfaceFormats2KHR must ANSWER a chained
+#     VkImageCompressionPropertiesEXT -- our loader previously discarded these
+#     outright, with the comment "completely ignore any chained extension
+#     structs". An extension that accepts a compression request and can never
+#     report what it did with it is a trap.
+#   3 the app's VkImageCompressionControlEXT must reach vkCreateImage
+#
+# The parameters in part 2 are NOT invented. Both A16 donors -- Samsung
+# SM-A175F (our driver's donor) and Infinix X6886 (Transsion, independent) --
+# ask the driver the identical question for each surface format:
+#     VkPhysicalDeviceImageFormatInfo2 { format = the surface format,
+#         type = 2D, tiling = OPTIMAL, usage = COLOR_ATTACHMENT, flags = 0 }
+#     pNext -> VkImageCompressionControlEXT { flags = FIXED_RATE_DEFAULT }
+#     out:  VkImageFormatProperties2 pNext -> VkImageCompressionPropertiesEXT
+# and copy the two returned flag words straight back into the app's struct.
+# For part 3 both copy the app's struct BY VALUE and clear its pNext before
+# chaining it onto image creation.
+#
+# ⚠ A BELIEF THIS STEP CORRECTS. The first version of the feature code said the
+# driver "has never heard of" this struct. It has: measured on the STOCK loader
+# with none of this present, r54p1 already answers
+# VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT with VK_TRUE -- it
+# is newer than this platform. What it does not and cannot do is ADVERTISE the
+# extension (stock loader: VK_EXT_image_compression_control yes, _swapchain no),
+# because the swapchain half is the loader's. We answer the feature so it is
+# right on its own terms rather than by luck.
+#
+# PROVEN ON HARDWARE 2026-09-07, with a negative control:
+#   patched    device_ext_count 147 (instance 14, unchanged)
+#              imageCompressionControlSwapchain 1
+#              properties ANSWERED -- 0xDEADBEEF sentinel overwritten, driver
+#                reports DEFAULT compression / no fixed rate for format 37
+#              vkCreateDevice(+both) 0 - vkCreateSwapchainKHR(+control) 0
+#   unpatched  device_ext_count 145 - vkCreateDevice(+both) -7
+#              properties NOT answered (sentinel intact)
+# Test binary: device_itel_S666LN/tools/vkcomp.c
+echo "== step 43: libvulkan VK_EXT_image_compression_control_swapchain =="
+VKDIR="$TREE/frameworks/native/vulkan/libvulkan"
+if [ ! -d "$VKDIR" ]; then
+  echo "   *** FATAL: $VKDIR not found"; exit 1
+elif grep -q 'kStructureTypeImageCompressionPropertiesEXT' "$VKDIR/swapchain.cpp" 2>/dev/null; then
+  echo "   already patched"
+else
+  cat > "$VKDIR/.rs43_swap_a" <<'RS43_SWAP_A'
+
+    // VK_EXT_image_compression_control_swapchain: the app chains a
+    // VkImageCompressionControlEXT onto the SWAPCHAIN, and it has to reach
+    // vkCreateImage for each swapchain image. Copied by VALUE and its pNext
+    // cleared, which is what both A16 donors do -- the app's struct may sit in
+    // a chain the image creation must not inherit.
+    VkImageCompressionControlEXT swapchain_compression = {};
+    bool have_compression_control = false;
+    for (const VkBaseInStructure* p =
+             reinterpret_cast<const VkBaseInStructure*>(create_info->pNext);
+         p != nullptr; p = p->pNext) {
+        if (static_cast<uint32_t>(p->sType) ==
+            kStructureTypeImageCompressionControlEXT) {
+            swapchain_compression =
+                *reinterpret_cast<const VkImageCompressionControlEXT*>(p);
+            swapchain_compression.pNext = nullptr;
+            have_compression_control = true;
+        }
+    }
+
+RS43_SWAP_A
+  cat > "$VKDIR/.rs43_swap_b" <<'RS43_SWAP_B'
+    if (have_compression_control) {
+        // Tail again, after the format list if there is one.
+        if (swapchain_image_format_list != nullptr)
+            const_cast<VkImageFormatListCreateInfo*>(swapchain_image_format_list)
+                ->pNext = &swapchain_compression;
+        else
+            swapchain_image_create.pNext = &swapchain_compression;
+    }
+
+RS43_SWAP_B
+  cat > "$VKDIR/.rs43_swap_c" <<'RS43_SWAP_C'
+        if (result == VK_SUCCESS || result == VK_INCOMPLETE) {
+            // marshal results individually due to stride difference.
+            uint32_t formats_to_marshal = *pSurfaceFormatCount;
+            for (uint32_t i = 0u; i < formats_to_marshal; i++) {
+                pSurfaceFormats[i].surfaceFormat = surface_formats[i];
+
+                // VK_EXT_image_compression_control_swapchain: answer a chained
+                // VkImageCompressionPropertiesEXT. This is the half of the
+                // extension that is easy to skip -- the comment here used to
+                // read "completely ignore any chained extension structs" --
+                // and skipping it would ship an extension that accepts a
+                // request and can never report what it did with it.
+                //
+                // The query below is not invented: both A16 donors ask the
+                // driver the identical question -- 2D, OPTIMAL tiling,
+                // COLOR_ATTACHMENT usage, requesting FIXED_RATE_DEFAULT -- and
+                // copy the two returned flag words straight back.
+                for (VkBaseOutStructure* p = reinterpret_cast<VkBaseOutStructure*>(
+                         pSurfaceFormats[i].pNext);
+                     p != nullptr; p = p->pNext) {
+                    if (static_cast<uint32_t>(p->sType) !=
+                        kStructureTypeImageCompressionPropertiesEXT)
+                        continue;
+
+                    const auto& driver = GetData(physicalDevice).driver;
+                    PFN_vkGetPhysicalDeviceImageFormatProperties2 fn =
+                        driver.GetPhysicalDeviceImageFormatProperties2;
+                    if (!fn)
+                        fn = driver.GetPhysicalDeviceImageFormatProperties2KHR;
+                    if (!fn)
+                        continue;
+
+                    VkImageCompressionControlEXT request = {};
+                    request.sType = static_cast<VkStructureType>(
+                        kStructureTypeImageCompressionControlEXT);
+                    request.flags = kImageCompressionFixedRateDefaultEXT;
+
+                    VkPhysicalDeviceImageFormatInfo2 info = {};
+                    info.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+                    info.pNext = &request;
+                    info.format = surface_formats[i].format;
+                    info.type = VK_IMAGE_TYPE_2D;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+                    info.flags = 0;
+
+                    VkImageCompressionPropertiesEXT out = {};
+                    out.sType = static_cast<VkStructureType>(
+                        kStructureTypeImageCompressionPropertiesEXT);
+
+                    VkImageFormatProperties2 props = {};
+                    props.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+                    props.pNext = &out;
+
+                    if (fn(physicalDevice, &info, &props) == VK_SUCCESS) {
+                        auto* dst =
+                            reinterpret_cast<VkImageCompressionPropertiesEXT*>(p);
+                        dst->imageCompressionFlags = out.imageCompressionFlags;
+                        dst->imageCompressionFixedRateFlags =
+                            out.imageCompressionFixedRateFlags;
+                    }
+                }
+            }
+        }
+RS43_SWAP_C
+  cat > "$VKDIR/.rs43_drv_helper" <<'RS43_DRV_HELPER'
+// VK_EXT_image_compression_control_swapchain is only meaningful when the DRIVER
+// implements the base VK_EXT_image_compression_control -- the loader only routes
+// the structs, the driver does the compressing. Both A16 donors gate the feature
+// on exactly this query (Samsung SM-A175F and Infinix X6886 both build a
+// VkPhysicalDeviceImageCompressionControlFeaturesEXT, chain it into
+// VkPhysicalDeviceFeatures2, ask the driver, and report the swapchain feature
+// TRUE only if imageCompressionControl came back TRUE), so the extension is
+// gated the same way.
+static bool DriverSupportsImageCompressionControl(VkPhysicalDevice physicalDevice) {
+    const InstanceData& data = GetData(physicalDevice);
+    PFN_vkGetPhysicalDeviceFeatures2 fn = data.driver.GetPhysicalDeviceFeatures2;
+    if (!fn)
+        fn = data.driver.GetPhysicalDeviceFeatures2KHR;
+    if (!fn)
+        return false;
+
+    VkPhysicalDeviceImageCompressionControlFeaturesEXT icc = {};
+    icc.sType = static_cast<VkStructureType>(
+        kStructureTypePhysicalDeviceImageCompressionControlFeaturesEXT);
+    icc.pNext = nullptr;
+    icc.imageCompressionControl = VK_FALSE;
+
+    VkPhysicalDeviceFeatures2 features = {};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &icc;
+
+    fn(physicalDevice, &features);
+    return icc.imageCompressionControl == VK_TRUE;
+}
+
+
+RS43_DRV_HELPER
+  cat > "$VKDIR/.rs43_drv_adv" <<'RS43_DRV_ADV'
+    // VK_EXT_image_compression_control_swapchain -- routed by the loader
+    // (swapchain.cpp), backed by the driver's own compression support.
+    if (DriverSupportsImageCompressionControl(physicalDevice)) {
+        loader_extensions.push_back(
+            {RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_EXTENSION_NAME,
+             RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_SPEC_VERSION});
+    }
+
+
+RS43_DRV_ADV
+  cat > "$VKDIR/.rs43_drv_feat" <<'RS43_DRV_FEAT'
+// Fill in the features the LOADER owns, after the driver has filled in its own.
+//
+// ⚠ NOT because the driver is ignorant of the struct -- measured on the STOCK
+// loader, with none of this code present, the Mali r54p1 driver already answers
+// VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT with VK_TRUE. It
+// is a newer driver than this platform. What it does NOT do, and cannot, is
+// ADVERTISE VK_EXT_image_compression_control_swapchain -- measured on the same
+// stock loader, the driver advertises VK_EXT_image_compression_control and not
+// the swapchain variant -- because the swapchain half is the loader's to
+// implement.
+//
+// So this exists to make the answer correct on its own terms rather than by
+// luck: the loader owns the extension, so the loader answers its feature, and
+// on this device the answer happens to agree with what the driver already said.
+static void AnswerLoaderFeatures(VkPhysicalDevice physicalDevice,
+                                 VkPhysicalDeviceFeatures2* pFeatures) {
+    bool icc_known = false;
+    bool icc_supported = false;
+    for (VkBaseOutStructure* p =
+             reinterpret_cast<VkBaseOutStructure*>(pFeatures->pNext);
+         p != nullptr; p = p->pNext) {
+        if (static_cast<uint32_t>(p->sType) !=
+            kStructureTypePhysicalDeviceImageCompressionControlSwapchainFeaturesEXT)
+            continue;
+        if (!icc_known) {
+            icc_supported = DriverSupportsImageCompressionControl(physicalDevice);
+            icc_known = true;
+        }
+        reinterpret_cast<VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT*>(
+            p)->imageCompressionControlSwapchain =
+            icc_supported ? VK_TRUE : VK_FALSE;
+    }
+}
+
+
+RS43_DRV_FEAT
+  cat > "$VKDIR/.rs43_hdr" <<'RS43_HDR'
+
+// ---- VK_EXT_image_compression_control_swapchain (device extension, no entry points)
+//
+// The BASE extension VK_EXT_image_compression_control is the DRIVER's (Mali
+// r54p1 exports it). This one only extends it to swapchains, which is loader
+// territory because the loader is what creates swapchain images.
+#define RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_EXTENSION_NAME \
+    "VK_EXT_image_compression_control_swapchain"
+#define RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_SPEC_VERSION 1
+
+constexpr uint32_t kStructureTypePhysicalDeviceImageCompressionControlFeaturesEXT = 1000338000u;
+constexpr uint32_t kStructureTypeImageCompressionControlEXT = 1000338001u;
+constexpr uint32_t kStructureTypeImageCompressionPropertiesEXT = 1000338004u;
+constexpr uint32_t kStructureTypePhysicalDeviceImageCompressionControlSwapchainFeaturesEXT =
+    1000437000u;
+
+typedef VkFlags VkImageCompressionFlagsEXT;
+typedef VkFlags VkImageCompressionFixedRateFlagsEXT;
+
+constexpr VkImageCompressionFlagsEXT kImageCompressionDefaultEXT = 0x00000000u;
+constexpr VkImageCompressionFlagsEXT kImageCompressionFixedRateDefaultEXT = 0x00000001u;
+
+struct VkPhysicalDeviceImageCompressionControlFeaturesEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkBool32 imageCompressionControl;
+};
+
+struct VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkBool32 imageCompressionControlSwapchain;
+};
+
+struct VkImageCompressionControlEXT {
+    VkStructureType sType;
+    const void* pNext;
+    VkImageCompressionFlagsEXT flags;
+    uint32_t compressionControlPlaneCount;
+    VkImageCompressionFixedRateFlagsEXT* pFixedRateFlags;
+};
+
+struct VkImageCompressionPropertiesEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkImageCompressionFlagsEXT imageCompressionFlags;
+    VkImageCompressionFixedRateFlagsEXT imageCompressionFixedRateFlags;
+};
+
+#endif  // VULKAN_LIBVULKAN_EXT_BACKPORT_H
+
+RS43_HDR
+  python3 - "$VKDIR" <<'PYCOMP'
+import sys
+V = sys.argv[1] + '/'
+
+def part(name):
+    # Each blob was written with ONE extra trailing newline so the heredoc
+    # delimiter could sit on its own line. Strip exactly that one back off.
+    with open(V + '.rs43_' + name) as f:
+        return f.read()[:-1]
+
+h = open(V + 'ext_backport.h').read()
+if 'RS4_VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_EXTENSION_NAME' not in h:
+    end = '\n#endif  // VULKAN_LIBVULKAN_EXT_BACKPORT_H\n'
+    if h.count(end) != 1:
+        sys.exit('ext_backport.h: no include guard end to append before')
+    open(V + 'ext_backport.h', 'w').write(h.replace(end, part('hdr')))
+
+s = open(V + 'swapchain.cpp').read()
+a = ('        mutable_format_image_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |\n'
+     '                                     VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;\n'
+     '    }\n')
+if s.count(a) != 1:
+    sys.exit('swapchain.cpp anchor A count %d (step 41 must run first)' % s.count(a))
+s = s.replace(a, a + part('swap_a'), 1)
+
+b = ('    if (swapchain_image_format_list != nullptr)\n'
+     '        swapchain_image_create.pNext = swapchain_image_format_list;\n')
+if s.count(b) != 1:
+    sys.exit('swapchain.cpp anchor B count %d' % s.count(b))
+s = s.replace(b, b + part('swap_b'), 1)
+
+c = ('        if (result == VK_SUCCESS || result == VK_INCOMPLETE) {\n'
+     '            // marshal results individually due to stride difference.\n'
+     '            // completely ignore any chained extension structs.\n'
+     '            uint32_t formats_to_marshal = *pSurfaceFormatCount;\n'
+     '            for (uint32_t i = 0u; i < formats_to_marshal; i++) {\n'
+     '                pSurfaceFormats[i].surfaceFormat = surface_formats[i];\n'
+     '            }\n'
+     '        }')
+if s.count(c) != 1:
+    sys.exit('swapchain.cpp anchor C count %d' % s.count(c))
+s = s.replace(c, part('swap_c'), 1)
+open(V + 'swapchain.cpp', 'w').write(s)
+
+d = open(V + 'driver.cpp').read()
+e = 'VkResult EnumerateDeviceExtensionProperties(\n'
+if d.count(e) != 1:
+    sys.exit('driver.cpp helper anchor count %d' % d.count(e))
+d = d.replace(e, part('drv_helper') + e, 1)
+
+f = ('    VkPhysicalDevicePresentationPropertiesANDROID presentation_properties;\n'
+     '    QueryPresentationProperties(physicalDevice, &presentation_properties);')
+if d.count(f) != 1:
+    sys.exit('driver.cpp advertise anchor count %d' % d.count(f))
+d = d.replace(f, part('drv_adv') + f, 1)
+
+g = 'void GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,\n'
+if d.count(g) != 1:
+    sys.exit('driver.cpp features anchor count %d' % d.count(g))
+d = d.replace(g, part('drv_feat') + g, 1)
+
+g2 = '        driver.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);\n        return;'
+if d.count(g2) != 1:
+    sys.exit('driver.cpp features2 body anchor count %d' % d.count(g2))
+d = d.replace(g2,
+              '        driver.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);\n'
+              '        AnswerLoaderFeatures(physicalDevice, pFeatures);\n        return;', 1)
+
+g3 = '    driver.GetPhysicalDeviceFeatures2KHR(physicalDevice, pFeatures);\n'
+if d.count(g3) != 1:
+    sys.exit('driver.cpp features2KHR anchor count %d' % d.count(g3))
+d = d.replace(g3, g3 + '    AnswerLoaderFeatures(physicalDevice, pFeatures);\n', 1)
+open(V + 'driver.cpp', 'w').write(d)
+PYCOMP
+  rc=$?
+  rm -f "$VKDIR"/.rs43_*
+  [ $rc -eq 0 ] || { echo "   *** FATAL: image_compression_control_swapchain patch failed"; exit 1; }
+  grep -q 'kStructureTypeImageCompressionPropertiesEXT' "$VKDIR/swapchain.cpp" \
+    || { echo "   *** FATAL: the properties answer never landed -- the extension"; \
+         echo "             would accept a request and never report the result"; exit 1; }
+  grep -q 'have_compression_control' "$VKDIR/swapchain.cpp" \
+    || { echo "   *** FATAL: the control never reaches vkCreateImage"; exit 1; }
+  grep -q 'AnswerLoaderFeatures' "$VKDIR/driver.cpp" \
+    || { echo "   *** FATAL: the feature is never answered"; exit 1; }
+  grep -q 'DriverSupportsImageCompressionControl' "$VKDIR/driver.cpp" \
+    || { echo "   *** FATAL: never advertised"; exit 1; }
+  # ⚠ Match the old CODE COMMENT exactly -- 12 spaces then the bare line. A
+  # loose grep for the phrase is a false positive, because the replacement text
+  # QUOTES that comment while explaining why it is gone. It fired once.
+  if grep -qE '^            // completely ignore any chained extension structs\.$' \
+       "$VKDIR/swapchain.cpp"; then
+    echo "   *** FATAL: control -- the discard-everything path is still there, so"
+    echo "             anchor C did not actually replace it"; exit 1
+  fi
+  echo "   patched (feature answered, properties answered, control forwarded)"
+fi
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
