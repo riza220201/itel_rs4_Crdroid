@@ -2038,6 +2038,254 @@ PYMUT
   echo "   patched (advertised in driver.cpp, implemented in swapchain.cpp)"
 fi
 
+# ---------------------------------------------------------------------------
+# STEP 42 -- VK_EXT_surface_maintenance1, implemented in the loader.
+#
+# Second of the four extensions that separate us from the donor's 148/14. This
+# one is INSTANCE-level and moves 13 -> 14. Like step 41 it adds no entry points
+# and needs nothing from the driver; unlike step 41 our vulkan-headers
+# (VK_HEADER_VERSION 203) predate it entirely, so the types come from a local
+# header rather than a repo bump -- vulkan_core.h is included by a large part of
+# the platform and bumping it to gain four extensions changes every one of those
+# compile units.
+#
+# 🔑 THE VALUES ARE NOT GUESSED. The extension makes the loader ANSWER questions
+# -- what scaling a surface supports, which present modes can be swapped without
+# recreating the swapchain -- and a wrong answer is worse than no extension. They
+# were read out of the two shipping A16 loaders by disassembly:
+#     Samsung SM-A175F  /system/lib64/libvulkan.so   (our driver's donor)
+#     Infinix X6886     /system/lib64/libvulkan.so   (Transsion, independent)
+# Both fill VkSurfacePresentScalingCapabilities from the SAME 8 rodata bytes,
+# 04000000 00000000 -> supportedPresentScaling = STRETCH, gravityX = 0, and both
+# then `str wzr` gravityY and copy min/maxScaledImageExtent straight off the base
+# capabilities. Two independent vendors agreeing byte-for-byte is AOSP behaviour,
+# not a vendor quirk. My own first instinct was to report scaling = 0, which
+# would have been WRONG.
+# For compatibility both build a list of just the queried mode, adding the other
+# SHARED_*_REFRESH mode when the query is one of those two.
+#
+# One deliberate divergence: the donors dereference the chained
+# VkSurfacePresentModeEXT unconditionally. The spec requires the app to provide
+# it, but we report nothing instead of faulting on an app that gets it wrong.
+#
+# PROVEN ON HARDWARE 2026-09-07, with a negative control:
+#   patched    instance_ext_count 14 (device 146, unchanged as predicted)
+#              supportedPresentScaling 4 · gravityX 0 · gravityY 0
+#              min/maxScaledImageExtent 1x1 / 4096x4096 == base caps
+#              FIFO compatible with itself only, count 1
+#   unpatched  instance_ext_count 13 · vkCreateInstance(+ext) -7
+# Test binary: device_itel_S666LN/tools/vksurf.c
+echo "== step 42: libvulkan VK_EXT_surface_maintenance1 =="
+VKDIR="$TREE/frameworks/native/vulkan/libvulkan"
+if [ ! -d "$VKDIR" ]; then
+  echo "   *** FATAL: $VKDIR not found"; exit 1
+elif grep -q 'kStructureTypeSurfacePresentScalingCapabilitiesEXT' "$VKDIR/swapchain.cpp" 2>/dev/null; then
+  echo "   already patched"
+else
+  cat > "$VKDIR/ext_backport.h" <<'PYEOF_HDR'
+/*
+ * ext_backport.h -- minimal definitions for Vulkan extensions the loader
+ * implements but external/vulkan-headers (VK_HEADER_VERSION 203) predates.
+ *
+ * WHY A LOCAL HEADER AND NOT A HEADER BUMP
+ * vulkan_core.h is included by a large fraction of the platform. Bumping the
+ * repo to pick up four extensions changes every one of those compile units and
+ * every enum they see. These definitions are needed by exactly two files, so
+ * they live next to those two files and nothing else can be affected by them.
+ *
+ * EVERY VALUE BELOW IS COPIED, NOT DERIVED, from Khronos
+ * Vulkan-Headers-vulkan-sdk-1.4.357.0/include/vulkan/vulkan_core.h. Do not
+ * "simplify" a number here; if one is wrong the struct is silently misread.
+ *
+ * The struct layouts must match the ABI exactly, so the field order and types
+ * are reproduced verbatim from that header rather than rewritten.
+ */
+
+#ifndef VULKAN_LIBVULKAN_EXT_BACKPORT_H
+#define VULKAN_LIBVULKAN_EXT_BACKPORT_H
+
+#include <vulkan/vulkan.h>
+
+// ---- VK_EXT_surface_maintenance1 (instance extension, no entry points)
+#define RS4_VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_surface_maintenance1"
+#define RS4_VK_EXT_SURFACE_MAINTENANCE_1_SPEC_VERSION 1
+
+// VkStructureType values. Cast at the point of comparison: VkStructureType in
+// this tree's headers does not contain them, and adding them as case labels
+// would be a "case value not in enumerated type" warning.
+constexpr uint32_t kStructureTypeSurfacePresentModeEXT = 1000274000u;
+constexpr uint32_t kStructureTypeSurfacePresentScalingCapabilitiesEXT = 1000274001u;
+constexpr uint32_t kStructureTypeSurfacePresentModeCompatibilityEXT = 1000274002u;
+
+typedef VkFlags VkPresentScalingFlagsEXT;
+typedef VkFlags VkPresentGravityFlagsEXT;
+
+// VkPresentScalingFlagBitsKHR
+constexpr VkPresentScalingFlagsEXT kPresentScalingOneToOneBitEXT = 0x00000001u;
+constexpr VkPresentScalingFlagsEXT kPresentScalingAspectRatioStretchBitEXT = 0x00000002u;
+constexpr VkPresentScalingFlagsEXT kPresentScalingStretchBitEXT = 0x00000004u;
+
+// VkPresentGravityFlagBitsKHR
+constexpr VkPresentGravityFlagsEXT kPresentGravityMinBitEXT = 0x00000001u;
+constexpr VkPresentGravityFlagsEXT kPresentGravityMaxBitEXT = 0x00000002u;
+constexpr VkPresentGravityFlagsEXT kPresentGravityCenteredBitEXT = 0x00000004u;
+
+struct VkSurfacePresentModeEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkPresentModeKHR presentMode;
+};
+
+struct VkSurfacePresentScalingCapabilitiesEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkPresentScalingFlagsEXT supportedPresentScaling;
+    VkPresentGravityFlagsEXT supportedPresentGravityX;
+    VkPresentGravityFlagsEXT supportedPresentGravityY;
+    VkExtent2D minScaledImageExtent;
+    VkExtent2D maxScaledImageExtent;
+};
+
+struct VkSurfacePresentModeCompatibilityEXT {
+    VkStructureType sType;
+    void* pNext;
+    uint32_t presentModeCount;
+    VkPresentModeKHR* pPresentModes;
+};
+
+#endif  // VULKAN_LIBVULKAN_EXT_BACKPORT_H
+PYEOF_HDR
+  cat > "$VKDIR/.rs4_sm1_block" <<'PYEOF_BLOCK'
+    // VK_EXT_surface_maintenance1: the compatibility query is answered ABOUT a
+    // present mode the app chains onto the INPUT struct. Scan for it first --
+    // the output walk below needs it. Behaviour copied from the two shipping
+    // A16 loaders (Samsung SM-A175F and Infinix X6886), which take the LAST
+    // match rather than the first and are byte-identical to each other here.
+    const VkSurfacePresentModeEXT* queried_present_mode = nullptr;
+    for (const VkBaseInStructure* p =
+             reinterpret_cast<const VkBaseInStructure*>(pSurfaceInfo->pNext);
+         p != nullptr; p = p->pNext) {
+        if (static_cast<uint32_t>(p->sType) ==
+            kStructureTypeSurfacePresentModeEXT) {
+            queried_present_mode =
+                reinterpret_cast<const VkSurfacePresentModeEXT*>(p);
+        }
+    }
+
+    VkSurfaceCapabilities2KHR* caps = pSurfaceCapabilities;
+    while (caps->pNext) {
+        caps = reinterpret_cast<VkSurfaceCapabilities2KHR*>(caps->pNext);
+
+        // VK_EXT_surface_maintenance1. Handled before the switch because this
+        // tree's VkStructureType does not contain these values, so they cannot
+        // be case labels without a "not in enumerated type" warning.
+        const uint32_t stype = static_cast<uint32_t>(caps->sType);
+
+        if (stype == kStructureTypeSurfacePresentScalingCapabilitiesEXT) {
+            auto* scaling =
+                reinterpret_cast<VkSurfacePresentScalingCapabilitiesEXT*>(caps);
+            // An Android surface stretches to the window; it does not letterbox
+            // and it has no gravity to choose. Both A16 loaders report exactly
+            // this, from the same 8 rodata bytes (04000000 00000000), and the
+            // extents are copied straight off the base capabilities.
+            scaling->supportedPresentScaling = kPresentScalingStretchBitEXT;
+            scaling->supportedPresentGravityX = 0;
+            scaling->supportedPresentGravityY = 0;
+            scaling->minScaledImageExtent =
+                pSurfaceCapabilities->surfaceCapabilities.minImageExtent;
+            scaling->maxScaledImageExtent =
+                pSurfaceCapabilities->surfaceCapabilities.maxImageExtent;
+            continue;
+        }
+
+        if (stype == kStructureTypeSurfacePresentModeCompatibilityEXT) {
+            auto* compat =
+                reinterpret_cast<VkSurfacePresentModeCompatibilityEXT*>(caps);
+            // A swapchain here cannot change present mode without being
+            // recreated, so a mode is compatible only with itself -- EXCEPT the
+            // two shared-present modes, which are interchangeable. Again this is
+            // what both A16 loaders do, not a guess.
+            VkPresentModeKHR modes[2];
+            uint32_t count = 0;
+            if (queried_present_mode != nullptr) {
+                const VkPresentModeKHR mode = queried_present_mode->presentMode;
+                modes[count++] = mode;
+                if (mode == VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR) {
+                    modes[count++] =
+                        VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR;
+                } else if (mode ==
+                           VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR) {
+                    modes[count++] = VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR;
+                }
+            } else {
+                // The spec requires a chained VkSurfacePresentModeEXT here
+                // (VUID-VkSurfaceCapabilities2KHR-pNext-07776). The donors
+                // dereference it unconditionally; report nothing instead of
+                // faulting on an app that gets it wrong.
+                ALOGE(
+                    "VkSurfacePresentModeCompatibilityEXT queried without a "
+                    "chained VkSurfacePresentModeEXT");
+            }
+            if (compat->pPresentModes == nullptr) {
+                compat->presentModeCount = count;
+            } else {
+                if (compat->presentModeCount > count)
+                    compat->presentModeCount = count;
+                for (uint32_t i = 0; i < compat->presentModeCount; i++)
+                    compat->pPresentModes[i] = modes[i];
+            }
+            continue;
+        }
+
+PYEOF_BLOCK
+  python3 - "$VKDIR/swapchain.cpp" "$VKDIR/driver.cpp" "$VKDIR/.rs4_sm1_block" <<'PYSURF'
+import sys
+sc_path, dr_path, block_path = sys.argv[1], sys.argv[2], sys.argv[3]
+block = open(block_path).read()
+s = open(sc_path).read()
+inc = '#include "driver.h"\n'
+if s.count(inc) < 1:
+    sys.exit('swapchain.cpp: no driver.h include to anchor on')
+if '#include "ext_backport.h"' not in s:
+    s = s.replace(inc, inc + '#include "ext_backport.h"\n', 1)
+anchor = ('    VkSurfaceCapabilities2KHR* caps = pSurfaceCapabilities;\n'
+          '    while (caps->pNext) {\n'
+          '        caps = reinterpret_cast<VkSurfaceCapabilities2KHR*>(caps->pNext);\n'
+          '\n'
+          '        switch (caps->sType) {')
+if s.count(anchor) != 1:
+    sys.exit('swapchain.cpp caps anchor count %d, expected 1' % s.count(anchor))
+s = s.replace(anchor, block + '        switch (caps->sType) {', 1)
+open(sc_path, 'w').write(s)
+
+d = open(dr_path).read()
+if '#include "ext_backport.h"' not in d:
+    d = d.replace(inc, inc + '#include "ext_backport.h"\n', 1)
+e = '    loader_extensions.push_back({VK_GOOGLE_SURFACELESS_QUERY_EXTENSION_NAME,\n'
+if d.count(e) != 1:
+    sys.exit('driver.cpp anchor count %d, expected 1' % d.count(e))
+e_new = ('    // VK_EXT_surface_maintenance1 -- implemented by the loader in\n'
+         '    // GetPhysicalDeviceSurfaceCapabilities2KHR (swapchain.cpp). Instance-level,\n'
+         '    // no entry points, no driver involvement.\n'
+         '    loader_extensions.push_back({RS4_VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME,\n'
+         '                                 RS4_VK_EXT_SURFACE_MAINTENANCE_1_SPEC_VERSION});\n') + e
+open(dr_path, 'w').write(d.replace(e, e_new, 1))
+PYSURF
+  rc=$?
+  rm -f "$VKDIR/.rs4_sm1_block"
+  [ $rc -eq 0 ] || { echo "   *** FATAL: surface_maintenance1 patch failed"; exit 1; }
+  grep -q 'kStructureTypeSurfacePresentScalingCapabilitiesEXT' "$VKDIR/swapchain.cpp" \
+    || { echo "   *** FATAL: the scaling case never landed"; exit 1; }
+  grep -q 'kPresentScalingStretchBitEXT' "$VKDIR/swapchain.cpp" \
+    || { echo "   *** FATAL: scaling value missing -- would report 0, which is NOT"; \
+         echo "             what either donor reports"; exit 1; }
+  grep -q 'RS4_VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME' "$VKDIR/driver.cpp" \
+    || { echo "   *** FATAL: never advertised"; exit 1; }
+  grep -q 'ext_backport.h' "$VKDIR/driver.cpp" \
+    || { echo "   *** FATAL: driver.cpp does not include the backport header"; exit 1; }
+  echo "   patched (instance extension advertised, capabilities answered)"
+fi
+
 echo "===================================================================="
 echo " apply-overlays-v2 complete  (ROM configuration only)"
 echo "===================================================================="
