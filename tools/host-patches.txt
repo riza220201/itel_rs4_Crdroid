@@ -1,0 +1,12 @@
+# Changes a BUILD HOST makes to the source tree on its own, accepted by verify-sync.sh only
+# when the file's `git diff` hashes exactly to the value here (anything else stays a FAIL).
+#
+# <path relative to TOP> <sha256 of `git -C <project> diff -- <file>`>  <what>
+#
+# Shared build server (rented 2026-11-13): a root-side watcher rewrites build/soong within a
+# minute of checkout, and again ~40 s after a revert, so the build runs the provider's
+# /opt/ninja (a fair-share scheduler over every tenant's builds) unless CUSTOM_NINJA_BIN is
+# set; rbe.go only relabels two status/fatal messages. Kept on purpose: it is how that host
+# shares its cores.
+build/soong/ui/build/config.go 3e364f46e6c4ef8c4cd1488bde0e083bff6fb10fdf70a14f27d87a5cacc7db4d  NinjaBin() -> $CUSTOM_NINJA_BIN or /opt/ninja (Axion's fork: same change, other context lines than AICP's)
+build/soong/ui/build/rbe.go c0e0e041da8506196720eefb9560aca80c313f0a9f5cb22fafe94f7de7d5ddee  "Starting rbe..." -> "Starting ninja...", one Fatalf message

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  itel RS4 (S666LN, MT6789 / Helio G99) - local manifest, LineageOS 23.2 (Android 16), built as crDroid 16.0.
+  Our three repos are on branch lineage-23.2 at riza220201 (device tree, kernel
+  package, vendor tree); the kernel source stays on lineage-20.0 (headers only).
+
+  Clean-room rule unchanged: nothing from KimelaZX or MillenniumOSS.
+
+    hardware/mediatek             PRODUCT_SOONG_NAMESPACES; on 23.2 it also
+                                  carries wlan/ (libwifi-hal-mt66xx), which on
+                                  A13 needed crDroid's separate wlan repo
+    device/mediatek/sepolicy_vndr sepolicy/vendor/*.te reference its types
+-->
+<manifest>
+  <remote name="los" fetch="https://github.com/LineageOS" clone-depth="1" />
+
+  <project path="hardware/mediatek" name="android_hardware_mediatek"
+           remote="los" revision="lineage-23.2" />
+
+  <project path="device/mediatek/sepolicy_vndr" name="android_device_mediatek_sepolicy_vndr"
+           remote="los" revision="lineage-23.2" />
+
+  <remote name="riza" fetch="https://github.com/riza220201" clone-depth="1" />
+
+  <!-- The device tree. -->
+  <project path="device/itel/S666LN" name="device_itel_S666LN"
+           remote="riza" revision="lineage-23.2" />
+
+  <!-- Kernel package: prebuilt/ (the imported Neutron-built vanilla kernel, v11 since 2026-11-16),
+       dtb/, dtbo.img, 198 vendor_dlkm + 206 vendor_boot modules (all stock rev 28
+       but the GPU pair, named in its README). -->
+  <project path="device/itel/S666LN-kernel" name="device_itel_S666LN-kernel"
+           remote="riza" revision="lineage-23.2" />
+
+  <!-- Kernel source (plain GKI android12-5.10 + s666ln_defconfig). Not compiled:
+       the kernel is imported. Present because LineageOS's generated_kernel_includes
+       runs headers_install on TARGET_KERNEL_SOURCE even with a prebuilt kernel
+       (seen on the Advan tree, 09-29); re-check on 23.2. -->
+  <project path="kernel/itel/S666LN" name="kernel_itel_S666LN"
+           remote="riza" revision="lineage-20.0" clone-depth="1" />
+
+  <!-- Proprietary blobs: stock rev 28 + the Mali r54p1 set (pinned), extracted
+       by the device tree's extract-files.py. -->
+  <project path="vendor/itel/S666LN" name="vendor_itel_S666LN"
+           remote="riza" revision="lineage-23.2" />
+</manifest>

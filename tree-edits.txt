@@ -1,0 +1,14 @@
+# Every change apply-overlays.sh makes inside repo-managed projects, one path per line, relative
+# to TOP. tools/verify-sync.sh accepts these and nothing else.
+# step 3 (libgui -> ged)
+frameworks/native/libs/gui/GedKpiHook.h
+frameworks/native/libs/gui/BufferQueueCore.cpp
+frameworks/native/libs/gui/BufferQueueProducer.cpp
+frameworks/native/libs/gui/BufferQueueConsumer.cpp
+# step 4 (AHardwareBuffer)
+frameworks/native/libs/nativewindow/AHardwareBuffer.cpp
+# step 5 (ART)
+art/runtime/gc/heap.cc
+# step 6 (GameManagerService)
+frameworks/base/services/core/java/com/android/server/app/GameManagerService.java
+# step 7: none on crDroid 16 (its Game Space bypass is native; see apply-overlays.sh)
