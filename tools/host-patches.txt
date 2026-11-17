@@ -8,5 +8,5 @@
 # /opt/ninja (a fair-share scheduler over every tenant's builds) unless CUSTOM_NINJA_BIN is
 # set; rbe.go only relabels two status/fatal messages. Kept on purpose: it is how that host
 # shares its cores.
-build/soong/ui/build/config.go 3e364f46e6c4ef8c4cd1488bde0e083bff6fb10fdf70a14f27d87a5cacc7db4d  NinjaBin() -> $CUSTOM_NINJA_BIN or /opt/ninja (Axion's fork: same change, other context lines than AICP's)
+build/soong/ui/build/config.go b504207ac6e55d67065e0bd21b3bfd4bd23a176d28fbf0ae3628508f00b1d29c  NinjaBin() -> $CUSTOM_NINJA_BIN or /opt/ninja (crDroid 16's soong hashes exactly as AICP's)
 build/soong/ui/build/rbe.go c0e0e041da8506196720eefb9560aca80c313f0a9f5cb22fafe94f7de7d5ddee  "Starting rbe..." -> "Starting ninja...", one Fatalf message
