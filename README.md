@@ -32,6 +32,9 @@ in `rom.conf`): itel never shipped Android 16, and e-KYC rejects a device+OS pai
 | `sign-release.sh` | `sign_target_files_apks` with your own keys, then `ota_from_target_files -k`, then proof the signer is yours |
 
 The goal is **`otapackage`, not `bacon`**: crDroid's `bacon` deletes the target-files that release signing needs.
+The local manifest also moves ten AOSP projects to LineageOS's forks (November 2026 security backports), because
+crDroid 16.0's manifest lags its LineageOS base by one merge and the LineageOS projects it already pulls depend on
+them (CellBroadcastReceiver failed to compile without them). Drop that block once crDroid merges them itself.
 crDroid 16's Game Space has bypass charging built in through LineageOS Health charging control, so step 7 (AICP's
 Game Space tile) does not apply here. microG is flashed on top separately.
 

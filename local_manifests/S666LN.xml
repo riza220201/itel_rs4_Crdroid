@@ -43,4 +43,32 @@
        by the device tree's extract-files.py. -->
   <project path="vendor/itel/S666LN" name="vendor_itel_S666LN"
            remote="riza" revision="lineage-23.2" />
+
+  <!-- crDroid 16.0's manifest lags its LineageOS 23.2 base by one merge (last merged 2026-10-27).
+       LineageOS forked these ten AOSP projects on 2026-11-03 (hardware/broadcom/wlan) and 2026-11-10
+       ("manifest: Forks for 2026-11 ASB"), and the LineageOS projects crDroid already pulls at
+       lineage-23.2 depend on them: CellBroadcastReceiver's "[25Q2 Backport]" uses ERRTYPE_MAP_* constants
+       that only LineageOS's CellBroadcastService has (6659dd3c), and the first crDroid 16 build failed on
+       exactly that (2026-11-17). So the ten paths follow LineageOS's manifest, as crDroid's next merge
+       will. Drop this block once crDroid's own manifest carries them. -->
+  <remove-project name="platform/external/aac" />
+  <project path="external/aac" name="android_external_aac" remote="los" revision="lineage-23.2" groups="pdk" />
+  <remove-project name="platform/external/hplip" />
+  <project path="external/hplip" name="android_external_hplip" remote="los" revision="lineage-23.2" groups="pdk" />
+  <remove-project name="platform/external/tremolo" />
+  <project path="external/tremolo" name="android_external_tremolo" remote="los" revision="lineage-23.2" groups="pdk" />
+  <remove-project name="platform/hardware/broadcom/wlan" />
+  <project path="hardware/broadcom/wlan" name="android_hardware_broadcom_wlan" remote="los" revision="lineage-23.2" groups="pdk,broadcom_wlan" />
+  <remove-project name="platform/packages/modules/CellBroadcastService" />
+  <project path="packages/modules/CellBroadcastService" name="android_packages_modules_CellBroadcastService" remote="los" revision="lineage-23.2" groups="pdk" />
+  <remove-project name="platform/packages/modules/NeuralNetworks" />
+  <project path="packages/modules/NeuralNetworks" name="android_packages_modules_NeuralNetworks" remote="los" revision="lineage-23.2" groups="pdk-cw-fs,pdk-fs" />
+  <remove-project name="platform/packages/modules/Telephony" />
+  <project path="packages/modules/Telephony" name="android_packages_modules_Telephony" remote="los" revision="lineage-23.2" groups="pdk-cw-fs,pdk-fs" />
+  <remove-project name="platform/packages/services/Iwlan" />
+  <project path="packages/services/Iwlan" name="android_packages_services_Iwlan" remote="los" revision="lineage-23.2" groups="pdk-cw-fs,pdk-fs" />
+  <remove-project name="platform/system/keymint" />
+  <project path="system/keymint" name="android_system_keymint" remote="los" revision="lineage-23.2" groups="pdk" />
+  <remove-project name="trusty/lib" />
+  <project path="trusty/user/base" name="android_trusty_user_base" remote="los" revision="lineage-23.2" groups="trusty,pdk" />
 </manifest>
