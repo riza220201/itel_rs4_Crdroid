@@ -276,6 +276,55 @@ fi
 # bypass node -- not an app patch. Until the device tree provides it, the toggle has no effect.
 echo "== step 7: (crDroid 16) Game Space bypass is native via Lineage Health -- nothing to patch =="
 
+# --- step 8: crDroid releasetools reads a target-files ZIP again (release signing) ---------------
+# crDroid's build fork (eea70833, "Fix reading build props on devices with legacy partition layout")
+# makes PartitionBuildProps._ReadPartitionPropFile resolve each partition's directory with
+# PartitionMapFromTargetFiles(), which only understands an EXTRACTED directory (os.path.exists).
+# ota_from_target_files hands it a directory, so crDroid's own OTA builds pass; sign_target_files_apks
+# hands it the open target-files ZipFile and dies in os.path.join (TypeError: ... not ZipFile) -- the
+# first signed crDroid 16 build, 2026-11-17. Same code on crDroid's 17.0.
+# Fix: the helper also answers for a ZipFile, from its entry names, with the SAME subdir table, so the
+# legacy-layout lookup works for both inputs; a partition the map does not know falls back to
+# AOSP's NAME.upper() (crDroid's [name] raised KeyError there, outside its try).
+echo "== step 8: (crDroid 16) releasetools: partition map from a target-files ZIP too =="
+RTC="$TREE/build/make/tools/releasetools/common.py"
+[ -f "$RTC" ] || { echo "   *** FATAL: $RTC not found"; exit 1; }
+if grep -q 'S666LN recipe step 8' "$RTC"; then
+  echo "   already patched"
+else
+  python3 - "$RTC" <<'PYRTC'
+import sys
+p = sys.argv[1]; s = open(p).read()
+pairs = [
+  ("      if os.path.exists(os.path.join(target_files_dir, subdir)):\n",
+   "      if exists(subdir):\n"),
+  ("  partition_map = {}\n  for partition, subdirs in possible_subdirs.items():\n",
+   "  # S666LN recipe step 8: sign_target_files_apks passes the open target-files ZipFile here (via\n"
+   "  # _ReadPartitionPropFile, crDroid eea70833); answer from its entry names with the same table.\n"
+   "  if isinstance(target_files_dir, zipfile.ZipFile):\n"
+   "    entries = target_files_dir.namelist()\n"
+   "    exists = lambda subdir: any(e.startswith(subdir + \"/\") for e in entries)\n"
+   "  else:\n"
+   "    exists = lambda subdir: os.path.exists(os.path.join(target_files_dir, subdir))\n"
+   "  partition_map = {}\n  for partition, subdirs in possible_subdirs.items():\n"),
+  ("    for prop_file in ['{}/etc/build.prop'.format(partition_map[name]),\n"
+   "                      '{}/build.prop'.format(partition_map[name])]:\n",
+   "    subdir = partition_map.get(name, name.upper())  # S666LN recipe step 8: AOSP's path if unmapped\n"
+   "    for prop_file in ['{}/etc/build.prop'.format(subdir),\n"
+   "                      '{}/build.prop'.format(subdir)]:\n"),
+]
+for old, new in pairs:
+  if s.count(old) != 1: sys.exit("anchor count %d, expected 1: %r" % (s.count(old), old[:60]))
+  s = s.replace(old, new, 1)
+open(p, "w").write(s)
+PYRTC
+  [ $? -eq 0 ] || { echo "   *** FATAL: releasetools patch failed"; exit 1; }
+  grep -q 'isinstance(target_files_dir, zipfile.ZipFile)' "$RTC" && grep -q 'partition_map.get(name, name.upper())' "$RTC" \
+    || { echo "   *** FATAL: releasetools patch not present"; exit 1; }
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$RTC" || { echo "   *** FATAL: common.py no longer parses"; exit 1; }
+  echo "   patched"
+fi
+
 echo "===================================================================="
 echo " apply-overlays.sh: all steps OK"
 echo "===================================================================="

@@ -36,6 +36,9 @@ signing needs, and its `otapackage` alone writes no target-files zip.
 The local manifest also moves ten AOSP projects to LineageOS's forks (November 2026 security backports), because
 crDroid 16.0's manifest lags its LineageOS base by one merge and the LineageOS projects it already pulls depend on
 them (CellBroadcastReceiver failed to compile without them). Drop that block once crDroid merges them itself.
+`apply-overlays.sh` step 8 patches crDroid's releasetools so `sign_target_files_apks` can read a target-files
+zip again: crDroid's legacy-partition-layout change resolves partition paths with a helper that only understood an
+extracted directory.
 crDroid 16's Game Space has bypass charging built in through LineageOS Health charging control, so step 7 (AICP's
 Game Space tile) does not apply here. microG is flashed on top separately.
 

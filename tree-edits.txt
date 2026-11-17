@@ -12,6 +12,8 @@ art/runtime/gc/heap.cc
 # step 6 (GameManagerService)
 frameworks/base/services/core/java/com/android/server/app/GameManagerService.java
 # step 7: none on crDroid 16 (its Game Space bypass is native; see apply-overlays.sh)
+# step 8 (crDroid releasetools: partition map from a target-files ZIP)
+build/make/tools/releasetools/common.py
 # NOT apply-overlays: crDroid's own build/make/envsetup.sh deletes these six toybox symlinks every time it is
 # sourced (remove_broken_build_tools(): the host's date and tar are used instead), so any crDroid tree that has
 # been built shows them deleted. Exact paths only; anything else in prebuilts/build-tools still fails verify-sync.
