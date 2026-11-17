@@ -27,11 +27,12 @@ in `rom.conf`): itel never shipped Android 16, and e-KYC rejects a device+OS pai
 | `sync.sh` | flock'd, shallow, stall-timeout `repo sync` |
 | `tools/verify-sync.sh` | read-only: worktrees, shallowness, LFS payloads, `tmp_pack_*`, the ROM owns build/soong, `repo status` |
 | `apply-overlays.sh` | **ROM configuration only**, numbered idempotent steps (1: imported kernel; 3–6: framework fixes for this SoC) |
-| `rom-build.sh` | preflight (RAM, out-dir disk, sync lock, LFS, manifest, device tree clean + on `lineage-23.2`, test-key dev certificate) → `lunch lineage_S666LN-bp4a-<variant>` → `m otapackage` |
+| `rom-build.sh` | preflight (RAM, out-dir disk, sync lock, LFS, manifest, device tree clean + on `lineage-23.2`, test-key dev certificate) → `lunch lineage_S666LN-bp4a-<variant>` → `m target-files-package otapackage` |
 | `build-and-sign.sh` | the detached driver: verify-sync → apply-overlays → build → adb-mode gate → release signing → VERDICT |
 | `sign-release.sh` | `sign_target_files_apks` with your own keys, then `ota_from_target_files -k`, then proof the signer is yours |
 
-The goal is **`otapackage`, not `bacon`**: crDroid's `bacon` deletes the target-files that release signing needs.
+The goals are **`target-files-package otapackage`, not `bacon`**: crDroid's `bacon` deletes the target-files that release
+signing needs, and its `otapackage` alone writes no target-files zip.
 The local manifest also moves ten AOSP projects to LineageOS's forks (November 2026 security backports), because
 crDroid 16.0's manifest lags its LineageOS base by one merge and the LineageOS projects it already pulls depend on
 them (CellBroadcastReceiver failed to compile without them). Drop that block once crDroid merges them itself.

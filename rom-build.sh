@@ -151,7 +151,9 @@ DEVCERT=$(get_build_var DEFAULT_SYSTEM_DEV_CERTIFICATE 2>/dev/null)
 echo "   dev certificate: $DEVCERT (replaced by release signing)"
 date "+BUILD_START %F %T"
 J=${JOBS:+-j$JOBS}
-if [ "${KEEP_GOING:-0}" = 1 ]; then echo "KEEP_GOING=1: m -k $J"; m $J -k "$GOAL"; else m $J "$GOAL"; fi
+# GOAL may name several targets (crDroid: target-files-package otapackage): split on purpose.
+# shellcheck disable=SC2086
+if [ "${KEEP_GOING:-0}" = 1 ]; then echo "KEEP_GOING=1: m -k $J $GOAL"; m $J -k $GOAL; else m $J $GOAL; fi
 rc=$?
 echo "BUILD_RC=$rc"
 date "+BUILD_END %F %T"
